@@ -58,7 +58,7 @@ jobs:
           xcodebuild -list
           set -o pipefail
           xcodebuild build \
-            -scheme NoteApp \
+            -scheme NoteiPad \
             -destination 'generic/platform=iOS Simulator' \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
