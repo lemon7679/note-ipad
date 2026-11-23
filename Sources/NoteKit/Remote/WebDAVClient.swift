@@ -222,7 +222,7 @@ public enum WebDAVMultistatusParser {
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
         parser.delegate = delegate
-        guard parser.parse() else { throw RemoteError.invalidResponse }
+        guard parser.parse(), delegate.sawMultistatus else { throw RemoteError.invalidResponse }
         return delegate.responses.compactMap { r -> RemoteItem? in
             guard let href = r.href, r.ok else { return nil }
             guard let serverPath = decodeHref(href) else { return nil }
@@ -260,6 +260,7 @@ public enum WebDAVMultistatusParser {
 
     private final class Delegate: NSObject, XMLParserDelegate {
         var responses: [Response] = []
+        var sawMultistatus = false
         private var current: Response?
         private var text = ""
         // Properties are only trusted inside a propstat whose status is 2xx.
@@ -270,6 +271,7 @@ public enum WebDAVMultistatusParser {
                     qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
             text = ""
             switch elementName {
+            case "multistatus": sawMultistatus = true
             case "response": current = Response()
             case "propstat": inPropstat = true; propstat = Response()
             case "collection": if inPropstat { propstat.isCollection = true }

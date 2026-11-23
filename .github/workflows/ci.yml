@@ -51,10 +51,11 @@ jobs:
         run: |
           xcodebuild -version
           if [ "${{ matrix.engine }}" = "stub" ]; then
-            export NOTE_ENGINE_STUB=1
+            touch .engine-stub   # xcodebuild does not pass env vars to Package.swift
           else
-            export NOTE_CORE_PATH="$GITHUB_WORKSPACE/note-core"
+            mv note-core ../note-core   # Package.swift looks for ../note-core
           fi
+          xcodebuild -list
           set -o pipefail
           xcodebuild build \
             -scheme NoteApp \

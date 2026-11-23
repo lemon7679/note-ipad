@@ -9,3 +9,6 @@ DerivedData/
 /xtool
 Package.resolved
 .vscode/
+
+# CI marker: build against Sources/InkBridgeStub (see Package.swift)
+.engine-stub

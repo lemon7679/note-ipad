@@ -13,13 +13,16 @@
 //   1. $NOTE_CORE_PATH            (a local checkout; the folder must be named `note-core`)
 //   2. ../note-core               (sibling checkout, the recommended layout)
 //   3. github.com/lemon7679/note-core, branch $NOTE_CORE_BRANCH (default `main`)
-// NOTE_ENGINE_STUB=1 swaps InkBridge for a no-op stand-in so CI without access to
-// the private engine can still type-check every app source file.
+// NOTE_ENGINE_STUB=1 (or an `.engine-stub` file next to this manifest, for
+// xcodebuild, which does not pass the environment to manifests) swaps InkBridge
+// for a no-op stand-in so CI without access to the private engine can still
+// type-check every app source file.
 import Foundation
 import PackageDescription
 
 let environment = Context.environment
 let useEngineStub = environment["NOTE_ENGINE_STUB"] == "1"
+    || FileManager.default.fileExists(atPath: Context.packageDirectory + "/.engine-stub")
 
 func noteCorePackage() -> Package.Dependency {
     if let path = environment["NOTE_CORE_PATH"], !path.isEmpty {

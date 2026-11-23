@@ -204,15 +204,22 @@ public final class AccountStore: @unchecked Sendable {
         self.fileURL = fileURL
     }
 
+    // Dates as raw numbers: lossless round trips (ISO 8601 drops sub-seconds).
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
+    }()
+
     public func load() -> [NASAccount] {
         guard let data = try? Data(contentsOf: fileURL),
-              let list = try? NotebookDocument.decoder.decode([NASAccount].self, from: data) else { return [] }
+              let list = try? JSONDecoder().decode([NASAccount].self, from: data) else { return [] }
         return list
     }
 
     public func save(_ accounts: [NASAccount]) throws {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try NotebookDocument.encoder.encode(accounts).write(to: fileURL, options: .atomic)
+        try Self.encoder.encode(accounts).write(to: fileURL, options: .atomic)
     }
 }
 
