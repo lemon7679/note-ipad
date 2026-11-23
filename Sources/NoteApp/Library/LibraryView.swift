@@ -144,7 +144,7 @@ struct LibraryView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            breadcrumb
+            breadcrumb.layoutPriority(1)
             Spacer(minLength: 8)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(NoteTheme.textSecondary)
@@ -159,7 +159,8 @@ struct LibraryView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(width: 220, height: 40)
+            .frame(minWidth: 120, maxWidth: 220)
+            .frame(height: 40)
             .background(NoteTheme.fieldFill, in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
 
             Menu {

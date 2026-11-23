@@ -128,6 +128,9 @@ docs/                  BUILD_WSL.md, ARCHITECTURE.md, DESIGN.md
 - Linux: NoteKit 빌드와 테스트, InkBridge 대역 API 일치 검사
 - macOS: 앱 전체를 iOS 시뮬레이터용으로 빌드(엔진 대역). 저장소 시크릿 `NOTE_CORE_TOKEN`
   (note-core 읽기 권한 토큰)을 추가하면 실제 엔진으로도 빌드합니다.
+- iPad 시뮬레이터 실행: xtool과 같은 방식으로 라이브러리를 앱으로 묶어(`ci/AppBuilder`, `ci/make_app.py`)
+  iPad Pro 11″ 시뮬레이터에 설치하고, 데모 데이터(DEBUG 전용 `-NoteDemoScreen`)로 라이브러리 · 편집기 ·
+  PDF 뷰어 · NAS 연결 · 설정 화면을 띄워 충돌 여부를 확인하고 스크린샷을 로그에 남깁니다.
 
 ## 알려진 한계 / 다음 단계
 
