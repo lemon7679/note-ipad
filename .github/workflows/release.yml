@@ -1,0 +1,48 @@
+name: Release
+
+# Publishes a GitHub Release for a `v*` tag.
+#
+# The IPA must contain the private note-core engine, which this public repository's
+# CI cannot read. It is built by note-core's "iPad IPA" workflow (or locally with
+# ci/build-ipa.sh) and handed over in a carrier commit: the pushed tag points at a
+# commit whose parent is the release source and which adds `release/` (the IPA and
+# NOTES.md). This workflow moves the tag back to the source commit and publishes
+# the release with those files.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Collect release files
+        run: |
+          ls -l release
+          ls release/*.ipa > /dev/null
+          test -f release/NOTES.md
+          mkdir -p dist
+          cp release/*.ipa release/NOTES.md dist/
+          (cd dist && sha256sum *.ipa > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          # The carrier commit only transports the binary; the tag should name the source.
+          if git diff --name-only HEAD^ HEAD | grep -qv '^release/'; then
+            echo "Tagged commit changes more than release/: keeping the tag where it is."
+          else
+            git tag -f "$GITHUB_REF_NAME" HEAD^
+            git push -f origin "refs/tags/$GITHUB_REF_NAME"
+          fi
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Note ${{ github.ref_name }}
+          body_path: dist/NOTES.md
+          files: |
+            dist/*.ipa
+            dist/SHA256SUMS.txt

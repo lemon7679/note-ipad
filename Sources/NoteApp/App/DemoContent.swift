@@ -1,4 +1,5 @@
 #if canImport(UIKit) && DEBUG
+import InkBridge
 import NoteKit
 import SwiftUI
 import UIKit
@@ -29,7 +30,10 @@ enum DemoContent {
                         fontSize: 17, colorHex: "#1F4FD1"),
         ]
         linear.pages[1].bookmarked = true
-        _ = try? NotebookPackage.create(in: lib.root, document: linear)
+        if let package = try? NotebookPackage.create(in: lib.root, document: linear),
+           let ink = demoInk(width: Float(linear.pages[0].size.width), height: Float(linear.pages[0].size.height)) {
+            try? package.writeInk(ink, pageID: linear.pages[0].id)
+        }
         _ = try? NotebookPackage.create(in: lib.root, document: NotebookDocument(
             title: "물리 실험 보고서", cover: CoverStyle(colorHex: "#1F7A55"), paper: PaperStyle(template: .grid), pageCount: 9))
         _ = try? NotebookPackage.create(in: lib.root, document: NotebookDocument(
@@ -40,6 +44,41 @@ enum DemoContent {
             _ = try? lib.importFile(from: pdf, into: "/", preferredName: "운영체제_09강_CPU스케줄링.pdf")
         }
         app.refreshLibrary()
+    }
+
+    /// Strokes drawn through the real engine (synthetic 240 Hz pencil input):
+    /// a highlight, a handwriting-like wave, a circle and an underline.
+    static func demoInk(width: Float, height: Float) -> Data? {
+        let page = InkPage(width: width, height: height)
+        let builder = StrokeBuilder(kind: .ballpoint)
+        func stroke(_ kind: BrushKind, _ hex: String, _ w: Float, _ points: [(Float, Float)]) {
+            builder.setBrush(kind, color: InkRGBA(hex: hex), width: w)
+            builder.setSnapOnHold(false)
+            var t = 1.0
+            func sample(_ p: (Float, Float), _ i: Int) -> PenSample {
+                let pressure = 0.35 + 0.3 * Float(sin(Double(i) / 9))
+                return PenSample(x: p.0, y: p.1, pressure: pressure, altitude: 1.1, azimuth: 0.6, time: t)
+            }
+            builder.begin(sample(points[0], 0))
+            for (i, p) in points.enumerated().dropFirst() {
+                t += 1.0 / 240
+                builder.add([sample(p, i)])
+            }
+            builder.end()
+            page.commit(builder)
+        }
+        let n = 160
+        stroke(.highlighter, "#FFE45C", 14, (0...40).map { (Float(84 + $0 * 8), 152) })
+        stroke(.fountainPen, "#1C1C1E", 1.6, (0...n).map { i in
+            let x = 84 + Float(i) * 2.4
+            return (x, 262 + 10 * sin(Float(i) / 6) + 3 * sin(Float(i) / 2.3))
+        })
+        stroke(.ballpoint, "#D12F2F", 1.4, (0...n).map { i in
+            let a = Float(i) / Float(n) * 2 * .pi * 1.03
+            return (440 + 48 * cos(a), 330 + 34 * sin(a))
+        })
+        stroke(.pencil, "#1F4FD1", 2.0, (0...80).map { (Float(84 + $0 * 4), 312 + Float($0 % 7) * 0.2) })
+        return page.save()
     }
 
     /// A small lecture-notes PDF with an outline-worthy structure.

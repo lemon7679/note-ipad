@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# CI only: builds the app for the iOS Simulator (engine stub), runs it on an iPad
-# simulator with demo content and prints downscaled screenshots as base64 into the log.
+# CI only: builds the app for the iOS Simulator, runs it on an iPad simulator with
+# demo content, saves screenshots (shot-*.png) and prints downscaled copies as base64.
+#   NOTE_ENGINE=stub (default) builds against Sources/InkBridgeStub;
+#   NOTE_ENGINE=core uses ../note-core.  PRINT_SHOTS=0 skips the base64 dump.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-touch .engine-stub
+if [ "${NOTE_ENGINE:-stub}" = "stub" ]; then touch .engine-stub; else rm -f .engine-stub; fi
 
 SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 if swift build --package-path ci/AppBuilder --triple arm64-apple-ios17.0-simulator --sdk "$SDK" 2>&1 | tail -20; then
@@ -15,7 +17,7 @@ if [ ! -f "${BIN:-/nonexistent}" ]; then
      -derivedDataPath "$PWD/dd" CODE_SIGNING_ALLOWED=NO > xcb.log 2>&1 || (grep -E "error:" xcb.log | head -40; exit 1))
   BIN=$(find ci/AppBuilder/dd/Build/Products -name NoteAppExec -type f | head -1)
 fi
-python3 ci/make_app.py "$BIN" build/NoteApp.app Resources/Info.plist
+python3 ci/make_app.py "$BIN" build/NoteApp.app Resources/Info.plist --icon Resources/AppIcon.png
 
 TYPE=$(xcrun simctl list devicetypes -j | python3 -c "
 import json,sys
@@ -43,9 +45,11 @@ for screen in library editor pdf connect settings; do
   fi
   xcrun simctl io "$UDID" screenshot "shot-$screen.png" > /dev/null
   sips -Z 1000 -s format jpeg -s formatOptions 60 "shot-$screen.png" --out "shot-$screen.jpg" > /dev/null
-  echo "@@SHOT $screen"
-  base64 -i "shot-$screen.jpg" -b 120
-  echo "@@END"
+  if [ "${PRINT_SHOTS:-1}" = "1" ]; then
+    echo "@@SHOT $screen"
+    base64 -i "shot-$screen.jpg" -b 120
+    echo "@@END"
+  fi
 done
 
 echo "== crash reports"
