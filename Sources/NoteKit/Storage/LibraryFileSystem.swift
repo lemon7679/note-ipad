@@ -79,6 +79,9 @@ public struct NotebookSummary: Equatable, Sendable {
     public var coverHex: String?
     public var isPDF: Bool
     public var modified: Date
+    /// Paper and size of the first page (placeholder cover before a thumbnail exists).
+    public var firstPaper: PaperStyle?
+    public var firstPageSize: PageSize?
 }
 
 /// File operations on one library source rooted at a local directory: "이 iPad"
@@ -159,7 +162,8 @@ public final class LibraryFileSystem: @unchecked Sendable {
         let package = NotebookPackage(url: url(for: path))
         guard let doc = try? package.readDocument() else { return nil }
         return NotebookSummary(title: doc.title, pageCount: doc.pages.count, coverHex: doc.cover.colorHex,
-                               isPDF: doc.pdf != nil, modified: doc.modified)
+                               isPDF: doc.pdf != nil, modified: doc.modified,
+                               firstPaper: doc.pages.first?.paper, firstPageSize: doc.pages.first?.size)
     }
 
     // MARK: Changes

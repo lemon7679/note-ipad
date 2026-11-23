@@ -49,8 +49,9 @@ for screen in library editor pdf connect settings; do
 done
 
 echo "== crash reports"
-ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i "NoteApp" | while read -r f; do
+for f in $(ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i "NoteApp" || true); do
   echo "-- $f"; head -c 6000 ~/Library/Logs/DiagnosticReports/"$f"; echo
+  status=1
 done
 echo "== app log"
 xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "NoteApp"' 2>/dev/null \

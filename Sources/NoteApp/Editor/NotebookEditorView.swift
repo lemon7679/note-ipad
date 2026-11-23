@@ -49,7 +49,7 @@ struct NotebookEditorView: View {
     @State private var renaming = false
     @State private var newTitle = ""
     @State private var shareItem: ShareItem?
-    @State private var customColor = Color.black
+    @State private var toolRowWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,7 +118,7 @@ struct NotebookEditorView: View {
             } label: {
                 HStack(spacing: 2) {
                     Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
-                    Text("라이브러리").font(.system(size: 15, weight: .medium))
+                    Text("라이브러리").font(.system(size: 15, weight: .medium)).fixedSize()
                 }
                 .foregroundStyle(NoteTheme.accent)
                 .frame(height: NoteTheme.minTouch)
@@ -140,6 +140,7 @@ struct NotebookEditorView: View {
                 renaming = true
             } label: {
                 Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                    .truncationMode(.middle)
                     .foregroundStyle(NoteTheme.textPrimary)
             }
             .buttonStyle(.plain)
@@ -232,6 +233,19 @@ struct NotebookEditorView: View {
     // MARK: Tool row (design: 56 pt)
 
     private var toolRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            toolRowContent
+                .padding(.horizontal, 12)
+                .frame(minWidth: toolRowWidth, minHeight: 56, alignment: .leading)
+        }
+        .frame(height: 56)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolRowWidth = $0 }
+        .background(NoteTheme.surface)
+        .overlay(alignment: .bottom) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
+        .shadow(color: .black.opacity(0.04), radius: 4, y: 2)
+    }
+
+    private var toolRowContent: some View {
         HStack(spacing: 4) {
             ForEach(EditorTool.allCases) { tool in
                 IconButton(systemName: tool.symbol, label: tool.label, isOn: model.tools.tool == tool, size: 21) {
@@ -265,11 +279,6 @@ struct NotebookEditorView: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 56)
-        .background(NoteTheme.surface)
-        .overlay(alignment: .bottom) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
-        .shadow(color: .black.opacity(0.04), radius: 4, y: 2)
     }
 
     private var divider: some View {

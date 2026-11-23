@@ -210,6 +210,8 @@ struct LibraryView: View {
             } label: {
                 Label("새로 만들기", systemImage: "plus")
                     .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
                     .frame(height: 40)
@@ -424,6 +426,11 @@ struct DocumentCard: View {
         case .notebook:
             if let hex = summary?.coverHex {
                 NotebookCover(title: summary?.title ?? item.displayName, colorHex: hex)
+            } else if thumbnail == nil, let paper = summary?.firstPaper, let size = summary?.firstPageSize {
+                PaperPreview(paper: paper, size: size)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(NoteTheme.separator))
+                    .shadow(color: .black.opacity(0.08), radius: 8, y: 6)
             } else {
                 pageThumbnail
             }
