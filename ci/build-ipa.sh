@@ -16,7 +16,8 @@ swift build --package-path ci/AppBuilder -c release --triple arm64-apple-ios17.0
 BIN="$(swift build --package-path ci/AppBuilder -c release --triple arm64-apple-ios17.0 --sdk "$SDK" --show-bin-path)/NoteAppExec"
 
 # The real engine must be linked in (the CI stub has no C symbols).
-nm -U "$BIN" | grep -q "_ink_editor_create" || { echo "error: InkEngine not linked" >&2; exit 1; }
+nm -U "$BIN" > "$BIN.symbols"
+grep "_ink_editor_create" "$BIN.symbols" > /dev/null || { echo "error: InkEngine not linked" >&2; exit 1; }
 
 mkdir -p "$OUT"
 rm -rf "$OUT/Payload"
@@ -28,5 +29,7 @@ rm -f "$IPA"
 echo "ipa: $IPA"
 ls -l "$IPA"
 lipo -info "$OUT/Payload/NoteApp.app/NoteApp"
-otool -l "$OUT/Payload/NoteApp.app/NoteApp" | grep -A4 LC_BUILD_VERSION | head -5
+otool -l "$OUT/Payload/NoteApp.app/NoteApp" > "$OUT/load-commands.txt"
+grep -A4 LC_BUILD_VERSION "$OUT/load-commands.txt" | head -5   # platform 2 = iOS
+otool -L "$OUT/Payload/NoteApp.app/NoteApp" | head -20
 shasum -a 256 "$IPA"
