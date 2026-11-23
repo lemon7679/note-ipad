@@ -1,14 +1,29 @@
 name: Release
 
-# Publishes a GitHub Release for a `v*` tag.
+# Publishes a GitHub Release with the IPA.
 #
 # The IPA must contain the private note-core engine, which this public repository's
 # CI cannot read. It is built by note-core's "iPad IPA" workflow (or locally with
-# ci/build-ipa.sh) and handed over in a carrier commit: the pushed tag points at a
-# commit whose parent is the release source and which adds `release/` (the IPA and
-# NOTES.md). This workflow moves the tag back to the source commit and publishes
-# the release with those files.
+# ci/build-ipa.sh on a Mac) and handed over in a carrier commit that adds
+# `release/` (the IPA and NOTES.md) on top of the release source.
+#
+# Two ways to publish:
+#  - Run this workflow manually: `version`, the source commit to tag, and the
+#    branch that carries `release/`. The tag v<version> is created on the source.
+#  - Push a `v*` tag that points at a carrier commit; the tag is moved back to the
+#    carrier's parent (the source) before publishing.
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without "v" (e.g. 0.1.0)
+        required: true
+      source:
+        description: Commit or branch to tag as the release source
+        default: main
+      assets_ref:
+        description: Branch whose release/ folder holds the IPA and NOTES.md
+        required: true
   push:
     tags: ['v*']
 
@@ -21,8 +36,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.assets_ref || github.ref }}
+          fetch-depth: 0
       - name: Collect release files
+        id: files
         run: |
           ls -l release
           ls release/*.ipa > /dev/null
@@ -30,18 +47,30 @@ jobs:
           mkdir -p dist
           cp release/*.ipa release/NOTES.md dist/
           (cd dist && sha256sum *.ipa > SHA256SUMS.txt && cat SHA256SUMS.txt)
-          # The carrier commit only transports the binary; the tag should name the source.
-          if git diff --name-only HEAD^ HEAD | grep -qv '^release/'; then
-            echo "Tagged commit changes more than release/: keeping the tag where it is."
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git fetch -q origin "${{ inputs.source }}" || true
+            sha=$(git rev-parse --verify "origin/${{ inputs.source }}^{commit}" 2>/dev/null \
+                  || git rev-parse --verify "${{ inputs.source }}^{commit}")
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
           else
-            git tag -f "$GITHUB_REF_NAME" HEAD^
-            git push -f origin "refs/tags/$GITHUB_REF_NAME"
+            sha=$(git rev-parse HEAD)
+            # The carrier commit only transports the binary; the tag should name the source.
+            if ! git diff --name-only HEAD^ HEAD | grep -qv '^release/'; then
+              sha=$(git rev-parse HEAD^)
+              git tag -f "$GITHUB_REF_NAME" "$sha"
+              git push -f origin "refs/tags/$GITHUB_REF_NAME"
+            fi
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
           fi
+          echo "Release ${{ github.event_name }}: tag $(grep tag= "$GITHUB_OUTPUT" | cut -d= -f2) on $sha"
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Note ${{ github.ref_name }}
+          tag_name: ${{ steps.files.outputs.tag }}
+          target_commitish: ${{ steps.files.outputs.sha }}
+          name: Note ${{ steps.files.outputs.tag }}
           body_path: dist/NOTES.md
           files: |
             dist/*.ipa
