@@ -12,3 +12,8 @@ Package.resolved
 
 # CI marker: build against Sources/InkBridgeStub (see Package.swift)
 .engine-stub
+ci/AppBuilder/.build/
+ci/AppBuilder/dd/
+build/
+shot-*.png
+shot-*.jpg

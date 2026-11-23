@@ -54,6 +54,29 @@ struct RootView: View {
         .onChange(of: app.accounts.map(\.id)) { _, ids in
             if case .source(.account(let id)) = selection, !ids.contains(id) { selection = .source(.local) }
         }
+        .task { await showDemoIfRequested() }
+    }
+
+    /// Debug builds: `-NoteDemoScreen <screen>` seeds sample content and opens a screen.
+    private func showDemoIfRequested() async {
+        #if DEBUG
+        guard let screen = DemoContent.requestedScreen else { return }
+        DemoContent.seed(app)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        let items = (try? app.library(.local).list("/")) ?? []
+        switch screen {
+        case "editor":
+            if let item = items.first(where: { $0.displayName == "선형대수 필기" }) { app.open(item, in: .local) }
+        case "pdf":
+            if let item = items.first(where: { $0.kind == .pdf }) { app.open(item, in: .local) }
+        case "connect":
+            connecting = NASAccount(name: "", kind: .synology, syncFolder: "/home/Notes")
+        case "settings":
+            showSettings = true
+        default:
+            break
+        }
+        #endif
     }
 
     @ViewBuilder

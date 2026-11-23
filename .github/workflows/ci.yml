@@ -74,3 +74,12 @@ jobs:
           name: ios-build-${{ matrix.engine }}
           path: build.log
           if-no-files-found: ignore
+
+  simulator:
+    name: iPad Simulator run (stub engine)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, install, launch and screenshot
+        run: ci/simulator-screenshots.sh
