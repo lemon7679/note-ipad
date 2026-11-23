@@ -62,7 +62,10 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
-            | tee build.log | grep -E "error:|warning: .*(deprecated|will never be executed)|BUILD (SUCCEEDED|FAILED)" || true
+            > build.log 2>&1 || true
+          grep -E "error:|warning:" build.log | sed -E "s#^.*/note-ipad/##" | sort -u | head -200 || true
+          echo "Compiled app sources: $(grep -oE 'Sources/NoteApp/[A-Za-z/]+\.swift' build.log | sort -u | wc -l)"
+          grep -E "BUILD (SUCCEEDED|FAILED)" build.log
           grep -q "BUILD SUCCEEDED" build.log
       - name: Upload build log
         if: always()
