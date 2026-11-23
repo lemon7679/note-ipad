@@ -49,12 +49,24 @@ UI/UX는 Claude Design 캔버스([Note iPad UI](https://claude.ai/artifact/5HvTj
 - "필기 시작": 원본 PDF는 그대로 두고 옆에 `<PDF> 필기.inknote`를 만들어 필기(다시 열면 같은 노트로)
 - 필기 노트에서도 PDF 목차·검색(검색어 위치 강조)
 
+## 설치 (릴리스 IPA)
+
+[Releases](https://github.com/lemon7679/note-ipad/releases)에서 `NoteApp-<버전>.ipa`(서명되지 않은 IPA)를 받아
+자신의 Apple ID로 서명해 설치합니다.
+
+```bash
+xtool install NoteApp-0.1.0.ipa
+```
+
+Sideloadly · AltStore 같은 사이드로딩 도구도 쓸 수 있습니다. 새 릴리스는 Actions › **Release** › Run workflow에
+버전을 넣으면 IPA를 빌드해 올립니다(릴리스 노트: `docs/releases/v<버전>.md`).
+
 ## 빌드 (Windows + WSL + xtool)
 
 요약은 아래와 같고, 처음 설정은 [docs/BUILD_WSL.md](docs/BUILD_WSL.md)를 따라 하세요.
 
 ```bash
-# 1) 두 저장소를 나란히 받기 (note-core는 비공개 저장소: GitHub 로그인 필요)
+# 1) 두 저장소를 나란히 받기
 mkdir -p ~/dev && cd ~/dev
 git clone https://github.com/lemon7679/note-core.git
 git clone https://github.com/lemon7679/note-ipad.git
@@ -124,10 +136,9 @@ docs/                  BUILD_WSL.md, ARCHITECTURE.md, DESIGN.md
 
 ## CI
 
-`.github/workflows/ci.yml`
-- Linux: NoteKit 빌드와 테스트, InkBridge 대역 API 일치 검사
-- macOS: 앱 전체를 iOS 시뮬레이터용으로 빌드(엔진 대역). 저장소 시크릿 `NOTE_CORE_TOKEN`
-  (note-core 읽기 권한 토큰)을 추가하면 실제 엔진으로도 빌드합니다.
+`.github/workflows/ci.yml` — note-core를 함께 받아 실제 엔진으로 검사합니다.
+- Linux: NoteKit·엔진 브리지 빌드와 테스트, InkBridge 대역 API 일치 검사
+- macOS: 앱 전체를 iOS 시뮬레이터용으로 빌드(실제 엔진, 엔진 대역 두 가지)
 - iPad 시뮬레이터 실행: xtool과 같은 방식으로 라이브러리를 앱으로 묶어(`ci/AppBuilder`, `ci/make_app.py`)
   iPad Pro 11″ 시뮬레이터에 설치하고, 데모 데이터(DEBUG 전용 `-NoteDemoScreen`)로 라이브러리 · 편집기 ·
   PDF 뷰어 · NAS 연결 · 설정 화면을 띄워 충돌 여부를 확인하고 스크린샷을 로그에 남깁니다.

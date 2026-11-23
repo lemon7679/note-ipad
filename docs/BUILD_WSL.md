@@ -10,7 +10,6 @@ iPad에 설치하는 방법입니다. 한 번만 설정하면 이후에는 `xtoo
 - Apple ID (무료 계정 가능 — 앱은 7일마다 다시 설치해야 함. 유료 개발자 계정이면 1년)
 - [Xcode.xip](https://developer.apple.com/download/all/?q=Xcode) — xtool이 iOS SDK를 추출하는 데 씁니다.
   브라우저에서 Apple ID로 로그인해 내려받습니다(xtool 문서가 지정한 버전).
-- note-core 저장소 읽기 권한(비공개 저장소)
 
 ## 1. WSL과 USB 연결
 
@@ -145,7 +144,6 @@ swift test
 | 증상 | 해결 |
 |---|---|
 | `product 'InkEngine' required by package 'note-ipad' ... not found` | note-core가 `../note-core`에 없거나 오래된 버전입니다. `git -C ../note-core pull` |
-| GitHub 인증 오류(note-core) | note-core는 비공개입니다. WSL에서 `gh auth login` 또는 Git Credential Manager로 로그인 |
 | `xtool dev`가 기기를 못 찾음 | PowerShell에서 `usbipd attach --wsl --busid …`를 다시 실행, `ideviceinfo`로 확인 |
 | 앱이 NAS를 못 찾음 | 처음 실행 시 "로컬 네트워크" 권한을 허용했는지 확인(설정 › 개인정보 보호 › 로컬 네트워크) |
 | 7일 후 앱이 안 열림 | 무료 계정의 프로비저닝 만료입니다. `xtool dev`로 다시 설치(데이터는 유지) |

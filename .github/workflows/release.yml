@@ -1,29 +1,22 @@
 name: Release
 
-# Publishes a GitHub Release with the IPA.
+# Builds the unsigned IPA (Release, arm64, iPadOS 17+) against note-core and
+# publishes a GitHub Release with it.
 #
-# The IPA must contain the private note-core engine, which this public repository's
-# CI cannot read. It is built by note-core's "iPad IPA" workflow (or locally with
-# ci/build-ipa.sh on a Mac) and handed over in a carrier commit that adds
-# `release/` (the IPA and NOTES.md) on top of the release source.
+#  - Run manually (Actions → Release → Run workflow): enter the version; the tag
+#    v<version> is created on the commit the workflow runs on.
+#  - Or push a `v*` tag.
 #
-# Two ways to publish:
-#  - Run this workflow manually: `version`, the source commit to tag, and the
-#    branch that carries `release/`. The tag v<version> is created on the source.
-#  - Push a `v*` tag that points at a carrier commit; the tag is moved back to the
-#    carrier's parent (the source) before publishing.
+# Release notes come from docs/releases/v<version>.md; build details are appended.
 on:
   workflow_dispatch:
     inputs:
       version:
         description: Version without "v" (e.g. 0.1.0)
         required: true
-      source:
-        description: Commit or branch to tag as the release source
+      core_ref:
+        description: note-core branch, tag or commit to build with
         default: main
-      assets_ref:
-        description: Branch whose release/ folder holds the IPA and NOTES.md
-        required: true
   push:
     tags: ['v*']
 
@@ -32,46 +25,53 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.assets_ref || github.ref }}
-          fetch-depth: 0
-      - name: Collect release files
-        id: files
+          repository: lemon7679/note-core
+          ref: ${{ inputs.core_ref || 'main' }}
+          path: note-core
+      - name: Version
+        id: v
         run: |
-          ls -l release
-          ls release/*.ipa > /dev/null
-          test -f release/NOTES.md
-          mkdir -p dist
-          cp release/*.ipa release/NOTES.md dist/
-          (cd dist && sha256sum *.ipa > SHA256SUMS.txt && cat SHA256SUMS.txt)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            git fetch -q origin "${{ inputs.source }}" || true
-            sha=$(git rev-parse --verify "origin/${{ inputs.source }}^{commit}" 2>/dev/null \
-                  || git rev-parse --verify "${{ inputs.source }}^{commit}")
-            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            version="${{ inputs.version }}"
           else
-            sha=$(git rev-parse HEAD)
-            # The carrier commit only transports the binary; the tag should name the source.
-            if ! git diff --name-only HEAD^ HEAD | grep -qv '^release/'; then
-              sha=$(git rev-parse HEAD^)
-              git tag -f "$GITHUB_REF_NAME" "$sha"
-              git push -f origin "refs/tags/$GITHUB_REF_NAME"
-            fi
-            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF_NAME#v}"
           fi
-          echo "Release ${{ github.event_name }}: tag $(grep tag= "$GITHUB_OUTPUT" | cut -d= -f2) on $sha"
+          version="${version#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version from $GITHUB_SHA"
+      - name: Build IPA
+        run: |
+          mv note-core ../note-core
+          xcodebuild -version
+          ci/build-ipa.sh "${{ steps.v.outputs.version }}" dist
+          (cd dist && shasum -a 256 NoteApp-*.ipa > SHA256SUMS.txt && cat SHA256SUMS.txt)
+      - name: Release notes
+        run: |
+          notes="docs/releases/${{ steps.v.outputs.tag }}.md"
+          if [ -f "$notes" ]; then cp "$notes" dist/NOTES.md; else echo "Note ${{ steps.v.outputs.tag }}" > dist/NOTES.md; fi
+          {
+            echo
+            echo "### 빌드 정보"
+            echo
+            echo "- note-ipad \`$(git rev-parse --short HEAD)\` · note-core \`$(git -C ../note-core rev-parse --short HEAD)\`"
+            echo "- $(xcodebuild -version | head -1) · iOS SDK $(xcrun --sdk iphoneos --show-sdk-version) · arm64 · iPadOS 17.0+"
+            echo "- SHA-256 \`$(cut -d' ' -f1 dist/SHA256SUMS.txt)\`"
+          } >> dist/NOTES.md
+          cat dist/NOTES.md
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.files.outputs.tag }}
-          target_commitish: ${{ steps.files.outputs.sha }}
-          name: Note ${{ steps.files.outputs.tag }}
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Note ${{ steps.v.outputs.tag }}
           body_path: dist/NOTES.md
           files: |
-            dist/*.ipa
+            dist/NoteApp-*.ipa
             dist/SHA256SUMS.txt

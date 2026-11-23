@@ -11,8 +11,8 @@ NoteApp (iOS, SwiftUI + UIKit + PDFKit)
 - **NoteKit**은 UI와 무관한 모든 것을 담습니다: 노트 파일 형식, 라이브러리 파일 조작, NAS 클라이언트, 동기화.
   `swift test`로 Linux/WSL에서 검증합니다(동기화는 임시 폴더를 가짜 NAS로 두 기기 시나리오까지).
 - **InkBridge**는 엔진 C API를 Swift 타입(`StrokeBuilder`, `InkPage`, `PenSample` …)으로 감쌉니다.
-  앱은 C API를 직접 부르지 않습니다. `Sources/InkBridgeStub`는 공개 CI에서 비공개 엔진 없이
-  앱 전체를 타입 검사하기 위한 동일 API의 빈 구현이며, `scripts/check-bridge-api.sh`가 두 API를 비교합니다.
+  앱은 C API를 직접 부르지 않습니다. `Sources/InkBridgeStub`는 엔진 없이도
+  앱 전체를 타입 검사할 수 있게 하는 동일 API의 빈 구현(`NOTE_ENGINE_STUB=1`)이며, `scripts/check-bridge-api.sh`가 두 API를 비교합니다.
 
 ## 캔버스 렌더링
 

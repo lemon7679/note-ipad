@@ -45,7 +45,7 @@ if [ -f "$core/Package.swift" ]; then
   fi
 else
   if [ -z "${NOTE_CORE_PATH:-}" ] && [ ! -e "$core" ]; then
-    warn "note-core not found next to note-ipad — cloning (private repository: GitHub login required)…"
+    warn "note-core not found next to note-ipad — cloning…"
     if git clone https://github.com/lemon7679/note-core.git "$core"; then
       ok "note-core cloned to $(cd "$core" && pwd)"
     else
