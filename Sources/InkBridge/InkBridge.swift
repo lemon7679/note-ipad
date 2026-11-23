@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 import InkEngine
 
 // Swift face of note-core's InkEngine C API (`ink_c.h`). The app talks only to

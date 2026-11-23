@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 // CI-only stand-in for `Sources/InkBridge` (selected with NOTE_ENGINE_STUB=1).
 // It has the same public API with no-op bodies so the app can be type-checked

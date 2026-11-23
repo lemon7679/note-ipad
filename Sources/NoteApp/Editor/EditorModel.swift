@@ -169,6 +169,11 @@ final class EditorModel: ObservableObject {
         let structureChanged = doc.pages.map(\.id) != document.pages.map(\.id)
             || zip(doc.pages, document.pages).contains { $0.size != $1.size || $0.paper != $1.paper || $0.background != $1.background }
         let elementPages = Set(zip(doc.pages, document.pages).filter { $0.elements != $1.elements }.map(\.0.id))
+        // Pages coming back (undo of a delete) must be written again: saving pruned their ink files.
+        let previous = Set(document.pages.map(\.id))
+        for page in doc.pages where !previous.contains(page.id) && pages[page.id] != nil {
+            dirtyInk.insert(page.id)
+        }
         document = doc
         documentDirty = true
         currentPageIndex = min(currentPageIndex, doc.pages.count - 1)
@@ -214,6 +219,7 @@ final class EditorModel: ObservableObject {
 
     func deletePage(at index: Int) {
         guard document.pages.count > 1, document.pages.indices.contains(index) else { return }
+        _ = inkPage(document.pages[index].id)   // keep the ink in memory so undo can restore it
         changeDocument { $0.pages.remove(at: index) }
     }
 
