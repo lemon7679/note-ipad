@@ -56,7 +56,8 @@ enum DemoContent {
             builder.setSnapOnHold(false)
             var t = 1.0
             func sample(_ p: (Float, Float), _ i: Int) -> PenSample {
-                let pressure = 0.35 + 0.3 * Float(sin(Double(i) / 9))
+                let wobble: Float = Float(sin(Double(i) / 9))
+                let pressure: Float = 0.35 + 0.3 * wobble
                 return PenSample(x: p.0, y: p.1, pressure: pressure, altitude: 1.1, azimuth: 0.6, time: t)
             }
             builder.begin(sample(points[0], 0))
@@ -68,16 +69,28 @@ enum DemoContent {
             page.commit(builder)
         }
         let n = 160
-        stroke(.highlighter, "#FFE45C", 14, (0...40).map { (Float(84 + $0 * 8), 152) })
-        stroke(.fountainPen, "#1C1C1E", 1.6, (0...n).map { i in
-            let x = 84 + Float(i) * 2.4
-            return (x, 262 + 10 * sin(Float(i) / 6) + 3 * sin(Float(i) / 2.3))
-        })
-        stroke(.ballpoint, "#D12F2F", 1.4, (0...n).map { i in
-            let a = Float(i) / Float(n) * 2 * .pi * 1.03
-            return (440 + 48 * cos(a), 330 + 34 * sin(a))
-        })
-        stroke(.pencil, "#1F4FD1", 2.0, (0...80).map { (Float(84 + $0 * 4), 312 + Float($0 % 7) * 0.2) })
+        var highlight: [(Float, Float)] = []
+        for i in 0...40 { highlight.append((Float(84 + i * 8), 152)) }
+        stroke(.highlighter, "#FFE45C", 14, highlight)
+
+        var wave: [(Float, Float)] = []
+        for i in 0...n {
+            let t = Float(i)
+            let y: Float = 262 + 10 * sin(t / 6) + 3 * sin(t / 2.3)
+            wave.append((84 + t * 2.4, y))
+        }
+        stroke(.fountainPen, "#1C1C1E", 1.6, wave)
+
+        var circle: [(Float, Float)] = []
+        for i in 0...n {
+            let a: Float = Float(i) / Float(n) * 2 * Float.pi * 1.03
+            circle.append((440 + 48 * cos(a), 330 + 34 * sin(a)))
+        }
+        stroke(.ballpoint, "#D12F2F", 1.4, circle)
+
+        var underline: [(Float, Float)] = []
+        for i in 0...80 { underline.append((Float(84 + i * 4), 312 + Float(i % 7) * 0.2)) }
+        stroke(.pencil, "#1F4FD1", 2.0, underline)
         return page.save()
     }
 
