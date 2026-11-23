@@ -1,0 +1,6 @@
+version: 1
+# xtool prefixes the bundle ID per Apple ID when signing for a device (e.g. XTL-1234.com.lemon7679.note).
+bundleID: com.lemon7679.note
+product: NoteApp
+infoPath: Resources/Info.plist
+iconPath: Resources/AppIcon.png

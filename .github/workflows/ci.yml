@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notekit-linux:
+    name: NoteKit tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.4-noble
+    env:
+      NOTE_ENGINE_STUB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bridge stub matches the engine bridge
+        run: scripts/check-bridge-api.sh
+      - name: Build
+        run: swift build --build-tests
+      - name: Test
+        run: swift test --skip-build
+
+  ios-app:
+    name: iOS app (${{ matrix.engine }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [stub, note-core]
+    env:
+      # Add a repository secret NOTE_CORE_TOKEN (read access to lemon7679/note-core)
+      # to build against the real engine; without it that matrix leg is skipped.
+      NOTE_CORE_TOKEN: ${{ secrets.NOTE_CORE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out note-core
+        if: matrix.engine == 'note-core' && env.NOTE_CORE_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: lemon7679/note-core
+          token: ${{ secrets.NOTE_CORE_TOKEN }}
+          path: note-core
+      - name: Build for iOS Simulator
+        if: matrix.engine == 'stub' || env.NOTE_CORE_TOKEN != ''
+        run: |
+          xcodebuild -version
+          if [ "${{ matrix.engine }}" = "stub" ]; then
+            export NOTE_ENGINE_STUB=1
+          else
+            export NOTE_CORE_PATH="$GITHUB_WORKSPACE/note-core"
+          fi
+          set -o pipefail
+          xcodebuild build \
+            -scheme NoteApp \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build.log | grep -E "error:|warning: .*(deprecated|will never be executed)|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-${{ matrix.engine }}
+          path: build.log
+          if-no-files-found: ignore
