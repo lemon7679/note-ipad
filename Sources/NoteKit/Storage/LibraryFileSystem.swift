@@ -16,7 +16,7 @@ public enum LibraryItemKind: String, Codable, Sendable {
 }
 
 /// One entry of a library folder listing.
-public struct LibraryItem: Identifiable, Hashable, Sendable {
+public struct LibraryEntry: Identifiable, Hashable, Sendable {
     public var id: String { path }
     /// Path inside the library source ("/강의/선형대수.inknote").
     public let path: String
@@ -57,7 +57,7 @@ public enum LibrarySort: String, CaseIterable, Identifiable, Codable, Sendable {
         }
     }
 
-    public func sort(_ items: [LibraryItem]) -> [LibraryItem] {
+    public func sort(_ items: [LibraryEntry]) -> [LibraryEntry] {
         items.sorted { a, b in
             switch self {
             case .modified:
@@ -112,10 +112,10 @@ public final class LibraryFileSystem: @unchecked Sendable {
 
     // MARK: Listing
 
-    public func list(_ folder: String) throws -> [LibraryItem] {
+    public func list(_ folder: String) throws -> [LibraryEntry] {
         let dir = url(for: folder)
         let names = try fm.contentsOfDirectory(atPath: dir.path)
-        var items: [LibraryItem] = []
+        var items: [LibraryEntry] = []
         for name in names where !FileNaming.isIgnored(name) {
             let itemURL = dir.appendingPathComponent(name)
             guard let attrs = try? fm.attributesOfItem(atPath: itemURL.path) else { continue }
@@ -128,7 +128,7 @@ public final class LibraryFileSystem: @unchecked Sendable {
                 modified = (docAttrs?[.modificationDate] as? Date) ?? modified
             }
             let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-            items.append(LibraryItem(path: RemotePath.join(folder, name), kind: kind, modified: modified, size: size))
+            items.append(LibraryEntry(path: RemotePath.join(folder, name), kind: kind, modified: modified, size: size))
         }
         return items
     }
@@ -144,10 +144,10 @@ public final class LibraryFileSystem: @unchecked Sendable {
     }
 
     /// Case-insensitive name search through the whole source.
-    public func search(_ query: String, in folder: String = "/") -> [LibraryItem] {
+    public func search(_ query: String, in folder: String = "/") -> [LibraryEntry] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
-        var out: [LibraryItem] = []
+        var out: [LibraryEntry] = []
         for item in (try? list(folder)) ?? [] {
             if item.displayName.localizedCaseInsensitiveContains(q) { out.append(item) }
             if item.kind == .folder { out.append(contentsOf: search(q, in: item.path)) }

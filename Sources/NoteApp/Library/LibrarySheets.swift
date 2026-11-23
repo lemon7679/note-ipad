@@ -274,7 +274,7 @@ struct PaperPreview: View {
 /// Folder picker for "이동".
 struct MoveSheet: View {
     let source: LibrarySource
-    let item: LibraryItem
+    let item: LibraryEntry
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -356,7 +356,7 @@ struct CollectionView: View {
 
 private struct RefItem: Identifiable {
     let ref: LibraryRef
-    let item: LibraryItem
+    let item: LibraryEntry
     var id: String { ref.id }
 }
 

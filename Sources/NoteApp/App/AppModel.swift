@@ -69,7 +69,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Listing
 
-    func items(in location: LibraryLocation) async -> [LibraryItem] {
+    func items(in location: LibraryLocation) async -> [LibraryEntry] {
         var items = (try? library(location.source).list(location.folder)) ?? []
         if location.source == .local, location.folder == "/" {
             items.removeAll { $0.fileName == "Inbox" }
@@ -81,7 +81,7 @@ final class AppModel: ObservableObject {
         return settings.librarySort.sort(items)
     }
 
-    func search(_ query: String, in source: LibrarySource) async -> [LibraryItem] {
+    func search(_ query: String, in source: LibrarySource) async -> [LibraryEntry] {
         var results = library(source).search(query)
         if let id = source.accountID, let engine = engine(for: id) {
             results += await engine.searchPlaceholders(query)
@@ -89,7 +89,7 @@ final class AppModel: ObservableObject {
         return settings.librarySort.sort(results)
     }
 
-    func badge(for item: LibraryItem, in source: LibrarySource) -> SyncBadgeState {
+    func badge(for item: LibraryEntry, in source: LibrarySource) -> SyncBadgeState {
         guard let id = source.accountID else { return .localOnly }
         if item.isPlaceholder { return .cloudOnly }
         if conflicts[id, default: []].contains(where: { RemotePath.isAncestor($0.path, of: item.path) }) {
@@ -118,7 +118,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Recents / favorites that still exist.
-    func existingItems(_ refs: [LibraryRef]) -> [(LibraryRef, LibraryItem)] {
+    func existingItems(_ refs: [LibraryRef]) -> [(LibraryRef, LibraryEntry)] {
         refs.compactMap { ref in
             let lib = library(ref.source)
             guard lib.exists(ref.path), let attrs = try? FileManager.default.attributesOfItem(atPath: lib.url(for: ref.path).path) else {
@@ -131,7 +131,7 @@ final class AppModel: ObservableObject {
                 let doc = lib.url(for: ref.path).appendingPathComponent(NotebookPackage.documentFile)
                 modified = (try? FileManager.default.attributesOfItem(atPath: doc.path))?[.modificationDate] as? Date ?? modified
             }
-            return (ref, LibraryItem(path: ref.path, kind: kind, modified: modified, size: 0))
+            return (ref, LibraryEntry(path: ref.path, kind: kind, modified: modified, size: 0))
         }
     }
 
@@ -146,11 +146,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Opening & closing documents
 
-    func open(_ item: LibraryItem, in source: LibrarySource) {
+    func open(_ item: LibraryEntry, in source: LibrarySource) {
         Task { await openAsync(item, in: source) }
     }
 
-    private func openAsync(_ item: LibraryItem, in source: LibrarySource) async {
+    private func openAsync(_ item: LibraryEntry, in source: LibrarySource) async {
         let ref = LibraryRef(source: source, path: item.path)
         var url = library(source).url(for: item.path)
         if item.isPlaceholder, let id = source.accountID, let engine = engine(for: id) {
@@ -317,7 +317,7 @@ final class AppModel: ObservableObject {
         perform(ref.source) { try $0.duplicate(ref.path) }
     }
 
-    func delete(_ item: LibraryItem, in source: LibrarySource) {
+    func delete(_ item: LibraryEntry, in source: LibrarySource) {
         let ref = LibraryRef(source: source, path: item.path)
         if item.isPlaceholder, let id = source.accountID, let engine = engine(for: id) {
             Task {
@@ -340,7 +340,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Frees space by removing the local copy of a downloaded NAS file.
-    func evict(_ item: LibraryItem, in source: LibrarySource) {
+    func evict(_ item: LibraryEntry, in source: LibrarySource) {
         guard let id = source.accountID, let engine = engine(for: id) else { return }
         Task {
             try? await engine.evict(item.path)

@@ -7,7 +7,7 @@ private enum KindFilter: String, CaseIterable, Identifiable {
     case all = "전체", notes = "노트", pdfs = "PDF", folders = "폴더"
     var id: String { rawValue }
 
-    func includes(_ item: LibraryItem) -> Bool {
+    func includes(_ item: LibraryEntry) -> Bool {
         switch self {
         case .all: return true
         case .notes: return item.kind == .notebook
@@ -22,21 +22,21 @@ struct LibraryView: View {
     let location: LibraryLocation
     @Binding var path: [String]
     @EnvironmentObject private var app: AppModel
-    @State private var items: [LibraryItem] = []
+    @State private var items: [LibraryEntry] = []
     @State private var loaded = false
     @State private var filter: KindFilter = .all
     @State private var query = ""
-    @State private var searchResults: [LibraryItem]?
+    @State private var searchResults: [LibraryEntry]?
     @State private var showNew = false
     @State private var newSheetMode: NewItemMode = .notebook
     @State private var importing = false
     @State private var importAnnotate = true
-    @State private var renaming: LibraryItem?
+    @State private var renaming: LibraryEntry?
     @State private var renameText = ""
-    @State private var moving: LibraryItem?
+    @State private var moving: LibraryEntry?
     @State private var showSyncCenter = false
     @State private var shareItem: ShareItem?
-    @State private var deleting: LibraryItem?
+    @State private var deleting: LibraryEntry?
 
     private var source: LibrarySource { location.source }
 
@@ -259,7 +259,7 @@ struct LibraryView: View {
 
     // MARK: Grids
 
-    private func foldersGrid(_ folders: [LibraryItem]) -> some View {
+    private func foldersGrid(_ folders: [LibraryEntry]) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
             ForEach(folders) { folder in
                 FolderCard(item: folder, source: source)
@@ -275,7 +275,7 @@ struct LibraryView: View {
         }
     }
 
-    private func documentsGrid(_ documents: [LibraryItem]) -> some View {
+    private func documentsGrid(_ documents: [LibraryEntry]) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 22, alignment: .top)], spacing: 24) {
             ForEach(documents) { item in
                 DocumentCard(item: item, source: source)
@@ -287,7 +287,7 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private func contextMenu(for item: LibraryItem) -> some View {
+    private func contextMenu(for item: LibraryEntry) -> some View {
         let ref = LibraryRef(source: source, path: item.path)
         if item.kind != .folder {
             Button { app.open(item, in: source) } label: { Label("열기", systemImage: "arrow.up.forward.app") }
@@ -349,7 +349,7 @@ struct LibraryView: View {
 // MARK: - Cards
 
 struct FolderCard: View {
-    let item: LibraryItem
+    let item: LibraryEntry
     let source: LibrarySource
     @EnvironmentObject private var app: AppModel
     @State private var count: Int?
@@ -380,7 +380,7 @@ struct FolderCard: View {
 }
 
 struct DocumentCard: View {
-    let item: LibraryItem
+    let item: LibraryEntry
     let source: LibrarySource
     @EnvironmentObject private var app: AppModel
     @State private var summary: NotebookSummary?

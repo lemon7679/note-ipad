@@ -331,21 +331,21 @@ public actor SyncEngine {
     // MARK: On-demand files and conflicts
 
     /// Online-only files directly inside `folder`.
-    public func placeholders(in folder: String) -> [LibraryItem] {
+    public func placeholders(in folder: String) -> [LibraryEntry] {
         let dir = RemotePath.normalize(folder)
         return state.records.compactMap { path, record in
             guard record.isPlaceholder, RemotePath.parent(path) == dir,
                   !fm.fileExists(atPath: localURL(path).path) else { return nil }
-            return LibraryItem(path: path, kind: LibraryItemKind.classify(name: RemotePath.name(path), isDirectory: false),
+            return LibraryEntry(path: path, kind: LibraryItemKind.classify(name: RemotePath.name(path), isDirectory: false),
                                modified: record.remoteModified, size: record.remoteSize, isPlaceholder: true)
         }
     }
 
     /// Online-only files whose name contains `query`.
-    public func searchPlaceholders(_ query: String) -> [LibraryItem] {
+    public func searchPlaceholders(_ query: String) -> [LibraryEntry] {
         state.records.compactMap { path, record in
             guard record.isPlaceholder, RemotePath.name(path).localizedCaseInsensitiveContains(query) else { return nil }
-            return LibraryItem(path: path, kind: LibraryItemKind.classify(name: RemotePath.name(path), isDirectory: false),
+            return LibraryEntry(path: path, kind: LibraryItemKind.classify(name: RemotePath.name(path), isDirectory: false),
                                modified: record.remoteModified, size: record.remoteSize, isPlaceholder: true)
         }
     }
