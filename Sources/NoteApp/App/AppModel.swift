@@ -63,6 +63,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// SF Symbol of a storage: an iPad for this device, the NAS kind's symbol for an account.
+    func symbolName(_ source: LibrarySource) -> String {
+        switch source {
+        case .local: return "ipad"
+        case .account(let id): return account(id)?.kind.symbolName ?? NASKind.synology.symbolName
+        }
+    }
+
     func url(for ref: LibraryRef) -> URL { library(ref.source).url(for: ref.path) }
 
     func refreshLibrary() { libraryRevision += 1 }
@@ -310,6 +318,41 @@ final class AppModel: ObservableObject {
         perform(ref.source) { lib in
             let newPath = try lib.move(ref.path, toFolder: folder)
             self.replaceRef(ref, with: LibraryRef(source: ref.source, path: newPath))
+        }
+    }
+
+    /// Whether `item` can be moved to another storage (e.g. a PDF on this iPad → a NAS).
+    func canMoveAcross(_ item: LibraryEntry, from source: LibrarySource) -> Bool {
+        source == .local && !item.isPlaceholder && !accounts.isEmpty
+            && (item.kind == .pdf || item.kind == .image || item.kind == .other)
+    }
+
+    /// Moves an item to a folder of the same or another storage. A file on this iPad moved to
+    /// a NAS lands in the account's local mirror and goes up with the next sync; the original
+    /// is removed only after the copy is complete. Recents and favorites follow it.
+    func move(_ ref: LibraryRef, to target: LibraryLocation) {
+        guard ref.source != target.source else { return move(ref, to: target.folder) }
+        let from = library(ref.source), to = library(target.source)
+        let name = RemotePath.name(ref.path)
+        do {
+            let original = from.url(for: ref.path)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: original.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                throw LibraryFileSystem.LibraryError.notFound(ref.path)
+            }
+            let newPath = try to.importFile(from: original, into: target.folder, preferredName: name)
+            let size = { (url: URL) in (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value }
+            guard let copied = size(to.url(for: newPath)), copied == size(original) else {
+                try? to.delete(newPath)
+                throw LibraryFileSystem.LibraryError.incompleteCopy(name)
+            }
+            try from.delete(ref.path)
+            replaceRef(ref, with: LibraryRef(source: target.source, path: newPath))
+            refreshLibrary()
+            localChange(in: target.source)
+        } catch {
+            errorMessage = "옮기지 못했습니다. \(error.localizedDescription)"
+            refreshLibrary()
         }
     }
 

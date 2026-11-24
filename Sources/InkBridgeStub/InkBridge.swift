@@ -126,6 +126,17 @@ public final class StrokeBuilder {
                            scale: Float, offsetX: Float, offsetY: Float) {}
 }
 
+// MARK: - Snapshot
+
+public final class InkSnapshot: @unchecked Sendable {
+    init() {}
+
+    public var strokeCount: Int { 0 }
+    public func renderOver(_ pixels: UnsafeMutableRawPointer, width: Int, height: Int, bytesPerRow: Int,
+                           scale: Float, offsetX: Float, offsetY: Float) {}
+    public func save() -> Data? { Data() }
+}
+
 // MARK: - Page
 
 public final class InkPage {
@@ -138,6 +149,9 @@ public final class InkPage {
     }
 
     public static var engineVersion: String { "stub" }
+
+    public private(set) var version: UInt64 = 0
+    public func snapshot() -> InkSnapshot { InkSnapshot() }
 
     public var pageWidth: Float { width }
     public var pageHeight: Float { height }

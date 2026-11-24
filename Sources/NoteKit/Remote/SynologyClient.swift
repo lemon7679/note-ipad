@@ -22,7 +22,10 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
     private let transport: HTTPTransport
     private let lock = NSLock()
     private var sid: String?
+    /// Some DSM builds reject the optional upload `mtime` field; after the first such refusal it is left out.
+    private var sendsMtime = true
     private static let deviceName = "Note iPad"
+    private static let mtimeSuspectErrors: Set<Int> = [400, 401]
 
     public init(baseURL: URL, username: String, password: String, deviceToken: String? = nil,
                 tls: TLSPolicy = TLSPolicy(), transport: HTTPTransport? = nil) {
@@ -75,6 +78,15 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
         lock.lock(); sid = value; lock.unlock()
     }
 
+    private var sendsModificationTime: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return sendsMtime
+    }
+
+    private func setSendsModificationTime(_ value: Bool) {
+        lock.lock(); sendsMtime = value; lock.unlock()
+    }
+
     /// POSTs an API call and returns the `data` object. Re-logins once when the session expired.
     @discardableResult
     func call(_ api: String, version: Int, method: String, _ params: [(String, String)] = [],
@@ -105,14 +117,24 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
     struct Decoded {
         var payload: [String: Any]
         var errorCode: Int?
+        /// The rest of DSM's `error` object (e.g. `{"errors":[…]}`), shortened.
+        var detail: String? = nil
     }
 
     static func decodeData(_ data: Data) throws -> Decoded {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let success = obj["success"] as? Bool else { throw RemoteError.invalidResponse }
         if success { return Decoded(payload: obj["data"] as? [String: Any] ?? [:], errorCode: nil) }
-        let code = (obj["error"] as? [String: Any])?["code"] as? Int ?? 100
-        return Decoded(payload: [:], errorCode: code)
+        let error = obj["error"] as? [String: Any]
+        let code = error?["code"] as? Int ?? 100
+        var detail: String?
+        if var rest = error {
+            rest["code"] = nil
+            if !rest.isEmpty, let json = try? JSONSerialization.data(withJSONObject: rest, options: [.sortedKeys]) {
+                detail = String(decoding: json.prefix(200), as: UTF8.self)
+            }
+        }
+        return Decoded(payload: [:], errorCode: code, detail: detail)
     }
 
     static func map(code: Int, api: String) -> RemoteError {
@@ -138,6 +160,11 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
         case 100: return "알 수 없는 DSM 오류입니다."
         case 101, 102, 103, 104: return "DSM이 이 요청을 지원하지 않습니다. DSM을 업데이트해 주세요."
         case 105: return "권한이 없습니다."
+        case 400: return "DSM이 파일 작업 요청을 이해하지 못했습니다 (400)."
+        case 401: return "DSM이 파일 작업을 거부했습니다 (401)."
+        case 402: return "NAS가 바빠 파일 작업을 하지 못했습니다 (402)."
+        case 403: return "이 사용자는 이 파일 작업을 할 수 없습니다 (403)."
+        case 404: return "이 사용자 그룹은 이 파일 작업을 할 수 없습니다 (404)."
         case 106: return "세션이 만료되었습니다."
         case 107: return "다른 곳에서 로그인하여 세션이 끊어졌습니다."
         case 119: return "세션 ID를 찾을 수 없습니다."
@@ -282,7 +309,18 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
     @discardableResult
     public func upload(from localURL: URL, to path: String, modified: Date?) async throws -> RemoteItem? {
         let target = RemotePath.normalize(path)
-        try await uploadOnce(localURL, target, modified, retrying: true)
+        let mtime = sendsModificationTime ? modified : nil
+        do {
+            try await uploadOnce(localURL, target, mtime, retrying: true)
+        } catch RemoteError.synology(let code, let detail) where mtime != nil && Self.mtimeSuspectErrors.contains(code) {
+            // Some DSM builds reject the optional `mtime` field: retry without it, and stop sending it if that works.
+            do {
+                try await uploadOnce(localURL, target, nil, retrying: true)
+            } catch RemoteError.synology(let code2, _) where code2 == code {
+                throw RemoteError.synology(code: code, detail: detail)
+            }
+            setSendsModificationTime(false)
+        }
         return try await stat(target)
     }
 
@@ -316,7 +354,10 @@ public final class SynologyClient: RemoteFileSystem, @unchecked Sendable {
                 try await uploadOnce(localURL, target, modified, retrying: false)
                 return
             }
-            throw Self.map(code: code, api: "SYNO.FileStation.Upload")
+            // Keep what DSM said (e.g. {"code":401,"errors":[…]}) so a failure can be diagnosed.
+            let mapped = Self.map(code: code, api: "SYNO.FileStation.Upload")
+            if case .synology = mapped { throw RemoteError.synology(code: code, detail: decoded.detail) }
+            throw mapped
         }
     }
 

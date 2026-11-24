@@ -22,8 +22,14 @@ enum PDFSupport {
         return (1...doc.numberOfPages).compactMap { doc.page(at: $0).map(pageSize) }
     }
 
+    /// Serializes PDF page drawing: tiles render on worker threads, and Core Graphics
+    /// gives no promise about drawing one PDF from several threads at once.
+    private static let drawLock = NSLock()
+
     /// Draws `page` into (0, 0, size) of a y-down context whose units are page points.
     static func draw(_ page: CGPDFPage, size: PageSize, in ctx: CGContext) {
+        drawLock.lock()
+        defer { drawLock.unlock() }
         ctx.saveGState()
         ctx.translateBy(x: 0, y: CGFloat(size.height))
         ctx.scaleBy(x: 1, y: -1)
@@ -161,6 +167,40 @@ enum Bitmaps {
     }
 }
 
+/// Background tile rendering, the way map / PDF viewers and tiled canvases do it: the main
+/// thread only decides *what* to draw and swaps finished images in; rasterizing runs on a
+/// few worker threads against immutable ink snapshots, so scrolling and zooming never wait
+/// for ink to render. Jobs are handed out nearest-to-the-viewport first by the canvas.
+@MainActor
+final class TileRenderQueue {
+    static let shared = TileRenderQueue()
+
+    /// Jobs running at once (one core stays free for input and Core Animation).
+    let width = max(1, min(3, ProcessInfo.processInfo.activeProcessorCount - 1))
+    private(set) var inFlight = 0
+    private let queue = DispatchQueue(label: "note.tiles", qos: .userInitiated, attributes: .concurrent)
+
+    /// Runs `work` on a worker thread, then `done` on the main thread with its result.
+    func run<T>(_ work: @escaping @Sendable () -> T, done: @escaping @MainActor (T) -> Void) {
+        inFlight += 1
+        queue.async {
+            let result = work()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.inFlight -= 1
+                    done(result)
+                }
+            }
+        }
+    }
+}
+
+/// A tile (or preview) image rendered on a worker, with the PDF background it drew.
+struct TileImage: @unchecked Sendable {
+    var image: CGImage?
+    var background: CGImage?
+}
+
 /// Renders whole pages to images (thumbnails, previews, sharing).
 enum PageImageRenderer {
     /// Paper or PDF background for the region `origin`… of a page at `scale`, into a fresh context.
@@ -180,17 +220,51 @@ enum PageImageRenderer {
         ctx.restoreGState()
     }
 
+    /// One tile on a worker thread: background (cached PDF image, or drawn now) + ink snapshot.
+    static func tile(page: NotebookPage, pdfPage: CGPDFPage?, background: CGImage?, snapshot: InkSnapshot,
+                                 pixelRect px: CGRect, scale: CGFloat) -> TileImage {
+        let w = Int(px.width), h = Int(px.height)
+        guard w > 0, h > 0, let ctx = Bitmaps.context(width: w, height: h) else { return TileImage() }
+        var drawnBackground: CGImage?
+        if let background {
+            ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h))
+        } else {
+            drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: w, pixelHeight: h, origin: px.origin,
+                           scale: scale)
+            if pdfPage != nil { drawnBackground = ctx.makeImage() }
+        }
+        if let data = ctx.data {
+            snapshot.renderOver(data, width: w, height: h, bytesPerRow: ctx.bytesPerRow, scale: Float(scale),
+                                offsetX: Float(-px.minX), offsetY: Float(-px.minY))
+        }
+        return TileImage(image: ctx.makeImage(), background: drawnBackground ?? background)
+    }
+
     static func image(page: NotebookPage, ink: InkPage?, pdf: CGPDFDocument?, package: NotebookPackage?,
                       pixelWidth: Int) -> CGImage? {
+        image(page: page, pdf: pdf, package: package, pixelWidth: pixelWidth) { data, w, h, bytesPerRow, scale in
+            ink?.renderOver(data, width: w, height: h, bytesPerRow: bytesPerRow, scale: scale, offsetX: 0, offsetY: 0)
+        }
+    }
+
+    /// Off the main thread: the ink comes from a snapshot.
+    static func image(page: NotebookPage, snapshot: InkSnapshot?, pdf: CGPDFDocument?, package: NotebookPackage?,
+                      pixelWidth: Int) -> CGImage? {
+        image(page: page, pdf: pdf, package: package, pixelWidth: pixelWidth) { data, w, h, bytesPerRow, scale in
+            snapshot?.renderOver(data, width: w, height: h, bytesPerRow: bytesPerRow, scale: scale, offsetX: 0, offsetY: 0)
+        }
+    }
+
+    private static func image(page: NotebookPage, pdf: CGPDFDocument?, package: NotebookPackage?, pixelWidth: Int,
+                              drawInk: (UnsafeMutableRawPointer, Int, Int, Int, Float) -> Void) -> CGImage? {
         let scale = CGFloat(pixelWidth) / CGFloat(page.size.width)
         let pixelHeight = Int((CGFloat(page.size.height) * scale).rounded())
         guard let ctx = Bitmaps.context(width: pixelWidth, height: pixelHeight) else { return nil }
         let pdfPage = page.background.pdfPageIndex.flatMap { pdf?.page(at: $0 + 1) }
         drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: pixelWidth, pixelHeight: pixelHeight,
                        origin: .zero, scale: scale)
-        if let ink, let data = ctx.data {
-            ink.renderOver(data, width: pixelWidth, height: pixelHeight, bytesPerRow: ctx.bytesPerRow,
-                           scale: Float(scale), offsetX: 0, offsetY: 0)
+        if let data = ctx.data {
+            drawInk(data, pixelWidth, pixelHeight, ctx.bytesPerRow, Float(scale))
         }
         if !page.elements.isEmpty {
             ctx.saveGState()
@@ -270,6 +344,20 @@ enum NotebookPDFExporter {
             path.closeSubpath()
             let color = UIColor(hex: outline.colorHex).cgColor
             ctx.saveGState()
+            if !outline.holes.isEmpty {
+                // Erased areas: clip them out of both the fill and the nib outline stroke.
+                let holes = CGMutablePath()
+                for hole in outline.holes {
+                    guard let h0 = hole.first else { continue }
+                    holes.move(to: CGPoint(x: h0.x, y: h0.y))
+                    for p in hole.dropFirst() { holes.addLine(to: CGPoint(x: p.x, y: p.y)) }
+                    holes.closeSubpath()
+                }
+                let pad = CGFloat(outline.strokeWidth) + 2
+                let area = CGPath(rect: path.boundingBoxOfPath.insetBy(dx: -pad, dy: -pad), transform: nil)
+                ctx.addPath(area.subtracting(holes, using: .winding))
+                ctx.clip()
+            }
             ctx.setAlpha(CGFloat(outline.opacity))
             if outline.multiply { ctx.setBlendMode(.multiply) }
             if outline.opacity < 1 || outline.strokeWidth > 0 {

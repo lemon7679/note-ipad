@@ -103,6 +103,8 @@ struct AppSettings: Codable, Equatable {
     var pencilOnly = true
     /// Two-finger tap = undo, three-finger tap = redo.
     var tapGesturesUndo = true
+    /// 낙서로 지우기: scribbling back and forth over ink with the pen erases it.
+    var scribbleToErase = true
     var defaultTemplate: PaperTemplate = .ruled
     var defaultPaperColor: PaperColor = .white
     var defaultSize: PageSizePreset = .a4
@@ -125,6 +127,25 @@ struct AppSettings: Codable, Equatable {
 
     var defaultPageSize: PageSize { defaultLandscape ? defaultSize.size.landscape : defaultSize.size.portrait }
     var defaultPaper: PaperStyle { PaperStyle(template: defaultTemplate, color: defaultPaperColor) }
+}
+
+extension AppSettings {
+    /// Settings saved by an older version lack newer keys: those take their defaults
+    /// instead of failing the whole decode (which would reset every setting).
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pencilOnly = try c.decodeIfPresent(Bool.self, forKey: .pencilOnly) ?? pencilOnly
+        tapGesturesUndo = try c.decodeIfPresent(Bool.self, forKey: .tapGesturesUndo) ?? tapGesturesUndo
+        scribbleToErase = try c.decodeIfPresent(Bool.self, forKey: .scribbleToErase) ?? scribbleToErase
+        defaultTemplate = (try? c.decodeIfPresent(PaperTemplate.self, forKey: .defaultTemplate)) ?? defaultTemplate
+        defaultPaperColor = (try? c.decodeIfPresent(PaperColor.self, forKey: .defaultPaperColor)) ?? defaultPaperColor
+        defaultSize = (try? c.decodeIfPresent(PageSizePreset.self, forKey: .defaultSize)) ?? defaultSize
+        defaultLandscape = try c.decodeIfPresent(Bool.self, forKey: .defaultLandscape) ?? defaultLandscape
+        correction = try c.decodeIfPresent(Double.self, forKey: .correction) ?? correction
+        snapShapes = try c.decodeIfPresent(Bool.self, forKey: .snapShapes) ?? snapShapes
+        librarySort = (try? c.decodeIfPresent(LibrarySort.self, forKey: .librarySort)) ?? librarySort
+    }
 }
 
 /// Reachability for Wi-Fi-only sync and offline badges.

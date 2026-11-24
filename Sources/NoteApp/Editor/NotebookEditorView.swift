@@ -201,6 +201,9 @@ struct NotebookEditorView: View {
                 Toggle(isOn: $app.settings.tapGesturesUndo) {
                     Label("두 손가락 탭으로 실행 취소", systemImage: "hand.tap")
                 }
+                Toggle(isOn: $app.settings.scribbleToErase) {
+                    Label("낙서로 지우기", systemImage: "scribble")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 20))
                     .frame(width: NoteTheme.minTouch, height: NoteTheme.minTouch)

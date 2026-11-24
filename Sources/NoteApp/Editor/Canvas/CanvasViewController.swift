@@ -65,6 +65,8 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     private var activePage: PageView?
     private var interaction: Interaction = .idle
     private var lassoPoints: [CGPoint] = []
+    /// Raw samples of the stroke being drawn (page units), for 낙서로 지우기.
+    private var strokePoints: [ScribbleDetector.Point] = []
     private var selection: Selection?
     private var editMenu: UIEditMenuInteraction?
     private let laserLayer = CAShapeLayer()
@@ -282,18 +284,30 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             let dirty = builder.updateGeometry(pixelsPerUnit: Float(pv.renderScale))
             pv.updateLive(builder, dirty: dirty)
         }
-        // Background tile work, nearest pages first, within a frame budget.
-        let budget: CFTimeInterval
-        if case .drawing = interaction { budget = 0.002 } else { budget = 0.007 }
-        let deadline = CACurrentMediaTime() + budget
+        // Erased ink: redraw what changed once per frame, not once per touch event.
+        if case .erasing = interaction, let pv = activePage {
+            pv.invalidate(pv.ink.takeDirty())
+        }
+        // Tiles for scrolling and zooming render on worker threads, nearest pages first.
+        let queue = TileRenderQueue.shared
+        var limit = queue.width
+        if case .drawing = interaction { limit = 1 }   // keep the cores for the pen while drawing
+        guard queue.inFlight < limit else { return }
         let mid = scrollView.convert(CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY), to: contentView)
         let ordered = pageViews.values.filter(\.hasPendingWork).sorted {
             abs($0.frame.midY - mid.y) < abs($1.frame.midY - mid.y)
         }
         for pv in ordered {
-            if CACurrentMediaTime() > deadline { break }
-            pv.renderWork(until: deadline)
+            if queue.inFlight >= limit { break }
+            pv.renderWork(limit: limit)
         }
+    }
+
+    /// Zoom levels tiles are rendered at (about 1.26× apart, ≥ the zoom): a small pinch keeps
+    /// the current tiles (scaled a little) instead of re-rendering every one.
+    static func renderLevel(_ zoom: CGFloat) -> CGFloat {
+        let steps = ceil(3 * log2(max(zoom, 0.01)) - 0.05)
+        return min(max(pow(2, steps / 3), 0.5), 5)
     }
 
     // MARK: Scroll view
@@ -311,7 +325,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     }
 
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-        renderZoom = scale
+        renderZoom = Self.renderLevel(scale)
         for pv in pageViews.values { pv.zoomChanged(scale) }
         updateVisiblePages()
         if let selection, let pv = pageViews[selection.pageID] { pv.showSelection(selection.bounds, zoom: scale) }
@@ -347,7 +361,9 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
 
     private func feed(_ t: UITouch, _ event: UIEvent?, into pv: PageView) {
         let coalesced = event?.coalescedTouches(for: t) ?? [t]
-        builder.add(coalesced.map { sample($0, in: pv) })
+        let samples = coalesced.map { sample($0, in: pv) }
+        for s in samples { strokePoints.append(ScribbleDetector.Point(x: Double(s.x), y: Double(s.y))) }
+        builder.add(samples)
         let predicted = event?.predictedTouches(for: t) ?? []
         builder.setPredicted(predicted.map { sample($0, in: pv) })
     }
@@ -389,6 +405,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             tools.configure(builder, viewScale: Float(layoutScale * scrollView.zoomScale))
             builder.setShapeConstraint(false)
             pv.setLiveMultiply(tool == .highlighter)
+            strokePoints.removeAll(keepingCapacity: true)
             builder.begin(sample(touch, in: pv))
             feed(touch, event, into: pv)
             haptics.prepare()
@@ -424,7 +441,6 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
                 if pv.ink.eraseMove(to: pagePoint(t, in: pv)) { erased = true }
             }
             interaction = .erasing(didErase: erased)
-            pv.invalidate(pv.ink.takeDirty())
             pv.showEraser(at: pagePoint(touch, in: pv), diameter: CGFloat(tools.eraserSize) / scrollView.zoomScale)
         case .lassoing:
             for t in event?.coalescedTouches(for: touch) ?? [touch] { lassoPoints.append(pagePoint(t, in: pv)) }
@@ -472,6 +488,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
         case .drawing:
             feed(touch, event, into: pv)
             builder.end()
+            if scratchOut(pv) { return }
             let id = pv.ink.commit(builder)
             pv.invalidate(pv.ink.takeDirty())   // new stroke into the tiles first…
             pv.clearLive()                       // …then drop the overlay: no flicker
@@ -531,6 +548,26 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             builder.updateEstimated(id: index.uint64Value, pressure: Float(t.force / max(t.maximumPossibleForce, 0.0001)),
                                     altitude: Float(t.altitudeAngle), azimuth: Float(t.azimuthAngle(in: pv)))
         }
+    }
+
+    // MARK: Scratch-out
+
+    /// 낙서로 지우기: a pen stroke scribbled back and forth over ink erases the strokes it
+    /// covers (one undo step) instead of being added. Returns false — keep the stroke as
+    /// ink — when it isn't a scribble or nothing lies under it.
+    private func scratchOut(_ pv: PageView) -> Bool {
+        guard settings.scribbleToErase, tools.tool == .pen, builder.snappedShape == .none,
+              let scribble = ScribbleDetector.detect(strokePoints) else { return false }
+        let ids = pv.ink.selectLasso(scribble.hull.map { CGPoint(x: $0.x, y: $0.y) })
+        guard !ids.isEmpty else { return false }
+        let covered = pv.ink.bounds(of: ids)
+        guard pv.ink.delete(ids) else { return false }
+        builder.cancel()
+        pv.invalidate(pv.ink.takeDirty().union(covered).insetBy(dx: -4, dy: -4))
+        pv.clearLive()
+        model.noteInkEdit(pv.pageID)
+        haptics.impactOccurred()
+        return true
     }
 
     // MARK: Lasso

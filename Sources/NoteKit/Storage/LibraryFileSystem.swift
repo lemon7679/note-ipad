@@ -91,12 +91,14 @@ public final class LibraryFileSystem: @unchecked Sendable {
         case alreadyExists(String)
         case invalidName
         case notFound(String)
+        case incompleteCopy(String)
 
         public var errorDescription: String? {
             switch self {
             case .alreadyExists(let n): return "‘\(n)’ 이름이 이미 있습니다."
             case .invalidName: return "사용할 수 없는 이름입니다."
             case .notFound(let p): return "\(RemotePath.name(p))을(를) 찾을 수 없습니다."
+            case .incompleteCopy(let n): return "‘\(n)’을(를) 끝까지 복사하지 못했습니다."
             }
         }
     }

@@ -63,7 +63,8 @@ public enum RemoteError: Error, LocalizedError, Equatable {
     case certificateChanged(fingerprint: String)
     case twoFactorRequired
     case twoFactorInvalid
-    case synology(code: Int)
+    /// DSM error code, with what else DSM said about it (e.g. `{"errors":[…]}`) when it said something.
+    case synology(code: Int, detail: String? = nil)
     case cancelled
     case unsupported(String)
 
@@ -83,7 +84,7 @@ public enum RemoteError: Error, LocalizedError, Equatable {
         case .certificateChanged: return "서버 인증서가 이전과 다릅니다. 보안을 위해 연결을 중단했습니다."
         case .twoFactorRequired: return "2단계 인증 코드가 필요합니다."
         case .twoFactorInvalid: return "2단계 인증 코드가 올바르지 않습니다."
-        case .synology(let code): return SynologyClient.message(for: code)
+        case .synology(let code, let detail): return SynologyClient.message(for: code) + (detail.map { " · \($0)" } ?? "")
         case .cancelled: return "취소되었습니다."
         case .unsupported(let what): return "지원하지 않는 기능입니다: \(what)"
         }
@@ -104,6 +105,16 @@ public enum RemoteError: Error, LocalizedError, Equatable {
     public var isTransient: Bool {
         switch self {
         case .network, .server: return true
+        default: return false
+        }
+    }
+
+    /// Worth retrying right away: dropped connections, server hiccups, a busy NAS.
+    public var isRetryable: Bool {
+        switch self {
+        case .network: return true
+        case .server(let status, _): return status >= 500
+        case .synology(let code, _): return code == 402
         default: return false
         }
     }

@@ -13,6 +13,13 @@ private final class Tile {
     /// Cached paper/PDF background (PDF pages only; templates are cheap to redraw).
     var background: CGImage?
     var valid = false
+    /// Bumped whenever the tile's content becomes outdated; a worker result is used only
+    /// if it was started for the current epoch.
+    var epoch = 0
+    /// Epoch a worker is rendering right now, if any.
+    var renderingEpoch: Int?
+
+    var isRendering: Bool { renderingEpoch == epoch }
 
     init() {
         layer = CALayer()
@@ -24,9 +31,12 @@ private final class Tile {
 /// One page on the canvas.
 ///
 /// Rendering: a low-resolution preview of the whole page sits underneath
-/// 512-px tiles rendered at the current zoom (paper/PDF + ink via
-/// `InkPage.renderOver`). While a stroke is drawn, only the overlay tiles it
-/// touches are redrawn each frame (`StrokeBuilder.renderOver`); on pen-up the
+/// 512-px tiles rendered at the current zoom level (paper/PDF + ink). Tiles
+/// for scrolling and zooming, and the preview, are rendered on worker threads
+/// from ink snapshots (`TileRenderQueue`), nearest to the middle of the screen
+/// first, so the main thread never waits for them. While a stroke is drawn,
+/// only the overlay tiles it touches are redrawn each frame
+/// (`StrokeBuilder.renderOver`); on pen-up (and for erasing / undo) the
 /// affected ink tiles are re-rendered in the same frame and the overlay is
 /// dropped, so nothing flickers. Old tiles stay visible after a zoom until
 /// the sharper set is ready.
@@ -61,6 +71,10 @@ final class PageView: UIView {
     private var visibleRect: CGRect = .null
     private var previewValid = false
     private var previewDirtyAt: CFTimeInterval?
+    private var previewEpoch = 0
+    private var previewRendering = false
+    /// Worker jobs started by this page that have not come back yet.
+    private var inFlight = 0
     private var elementViews: [UUID: ElementView] = [:]
     var elementsInteractive = false {
         didSet { elementViews.values.forEach { $0.isUserInteractionEnabled = elementsInteractive } }
@@ -197,6 +211,7 @@ final class PageView: UIView {
         renderScale = 0   // forces a new tile set
         dropAllTiles(keepStale: false)
         previewValid = false
+        previewEpoch += 1
         for view in elementViews.values { view.pointsPerUnit = value }
     }
 
@@ -219,7 +234,10 @@ final class PageView: UIView {
             tiles[key] = nil
         }
         pending = pending.intersection(needed)
-        for key in needed where tiles[key]?.valid != true { pending.insert(key) }
+        for key in needed {
+            if let tile = tiles[key], tile.valid || tile.isRendering { continue }
+            pending.insert(key)
+        }
     }
 
     private func dropAllTiles(keepStale: Bool) {
@@ -240,32 +258,76 @@ final class PageView: UIView {
         clearLive()
     }
 
-    var hasPendingWork: Bool { !pending.isEmpty || !previewValid || staleContainer != nil }
+    var hasPendingWork: Bool { !pending.isEmpty || (!previewValid && !previewRendering) }
 
-    /// Renders queued tiles (nearest to the visible centre first) until `deadline`.
-    func renderWork(until deadline: CFTimeInterval) {
-        if !previewValid && (previewDirtyAt.map { CACurrentMediaTime() - $0 > 0.6 } ?? true) {
+    /// Hands queued tiles to the workers (nearest to the visible centre first) while fewer
+    /// than `limit` jobs are running; the preview goes first when it is due.
+    func renderWork(limit: Int) {
+        let queue = TileRenderQueue.shared
+        if !previewValid, !previewRendering, queue.inFlight < limit,
+           previewDirtyAt.map({ CACurrentMediaTime() - $0 > 0.6 }) ?? true {
             renderPreview()
-            if CACurrentMediaTime() > deadline { return }
         }
         guard renderScale > 0, !visibleRect.isNull else { return }
-        let center = CGPoint(x: visibleRect.midX * renderScale, y: visibleRect.midY * renderScale)
-        let ordered = pending.sorted { a, b in
-            let ra = pixelRect(a), rb = pixelRect(b)
-            return hypot(ra.midX - center.x, ra.midY - center.y) < hypot(rb.midX - center.x, rb.midY - center.y)
+        if !pending.isEmpty && queue.inFlight < limit {
+            let center = CGPoint(x: visibleRect.midX * renderScale, y: visibleRect.midY * renderScale)
+            let ordered = pending.sorted { a, b in
+                let ra = pixelRect(a), rb = pixelRect(b)
+                return hypot(ra.midX - center.x, ra.midY - center.y) < hypot(rb.midX - center.x, rb.midY - center.y)
+            }
+            for key in ordered {
+                if queue.inFlight >= limit { break }
+                pending.remove(key)
+                startTile(key)
+            }
         }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for key in ordered {
-            renderTile(key)
-            pending.remove(key)
-            if CACurrentMediaTime() > deadline { break }
-        }
-        if pending.isEmpty, let stale = staleContainer {
-            stale.removeFromSuperlayer()
-            staleContainer = nil
-        }
-        CATransaction.commit()
+        dropStaleIfDone()
+    }
+
+    private func dropStaleIfDone() {
+        guard pending.isEmpty, inFlight == 0, let stale = staleContainer else { return }
+        stale.removeFromSuperlayer()
+        staleContainer = nil
+    }
+
+    private func tile(for key: TileKey) -> Tile {
+        if let existing = tiles[key] { return existing }
+        let tile = Tile()
+        tiles[key] = tile
+        tileContainer.addSublayer(tile.layer)
+        return tile
+    }
+
+    /// Renders one tile on a worker; the result is used only if nothing changed meanwhile.
+    private func startTile(_ key: TileKey) {
+        let px = pixelRect(key)
+        guard px.width > 0, px.height > 0 else { return }
+        let tile = tile(for: key)
+        let epoch = tile.epoch
+        tile.renderingEpoch = epoch
+        inFlight += 1
+        let page = self.page, pdfPage = self.pdfPage, background = tile.background
+        let snapshot = ink.snapshot(), scale = renderScale
+        TileRenderQueue.shared.run({
+            PageImageRenderer.tile(page: page, pdfPage: pdfPage, background: background, snapshot: snapshot,
+                                   pixelRect: px, scale: scale)
+        }, done: { [weak self] result in
+            guard let self else { return }
+            self.inFlight -= 1
+            if tile.renderingEpoch == epoch { tile.renderingEpoch = nil }
+            if self.tiles[key] === tile, tile.epoch == epoch, self.renderScale == scale, let image = result.image {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                if self.pdfPage != nil { tile.background = result.background }
+                tile.layer.contents = image
+                tile.layer.frame = self.layerFrame(px)
+                tile.valid = true
+                CATransaction.commit()
+            } else if self.tiles[key] === tile, !tile.valid, !tile.isRendering, self.renderScale == scale {
+                self.pending.insert(key)   // outdated result for a tile that is still wanted: render again
+            }
+            self.dropStaleIfDone()
+        })
     }
 
     private static var scratch: [Int: CGContext] = [:]
@@ -279,18 +341,13 @@ final class PageView: UIView {
         return ctx
     }
 
+    /// Renders a tile right now on the main thread (pen-up, erasing, undo: no flicker).
     private func renderTile(_ key: TileKey) {
         let px = pixelRect(key)
         let w = Int(px.width), h = Int(px.height)
         guard w > 0, h > 0, let ctx = Self.scratchContext(w, h) else { return }
-        let tile: Tile
-        if let existing = tiles[key] {
-            tile = existing
-        } else {
-            tile = Tile()
-            tiles[key] = tile
-            tileContainer.addSublayer(tile.layer)
-        }
+        let tile = tile(for: key)
+        tile.epoch += 1   // a worker result started before this change is outdated
         if let background = tile.background {
             ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h))
         } else {
@@ -311,13 +368,13 @@ final class PageView: UIView {
     func invalidate(_ pageRect: CGRect) {
         guard !pageRect.isNull else { return }
         previewValid = false
+        previewEpoch += 1
         previewDirtyAt = CACurrentMediaTime()
         let affected = keys(intersecting: pageRect.insetBy(dx: -2, dy: -2))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for key in affected {
-            guard let tile = tiles[key] else { continue }
-            tile.valid = false
+            guard tiles[key] != nil else { continue }
             renderTile(key)
             pending.remove(key)
         }
@@ -326,25 +383,39 @@ final class PageView: UIView {
 
     func invalidateAll() {
         previewValid = false
-        for tile in tiles.values { tile.valid = false; tile.background = nil }
+        previewEpoch += 1
+        for tile in tiles.values {
+            tile.valid = false
+            tile.background = nil
+            tile.epoch += 1
+        }
         pending.formUnion(tiles.keys)
     }
 
+    /// Low-resolution whole-page image under the tiles, rendered on a worker.
     private func renderPreview() {
         let width = min(Int(CGFloat(page.size.width) * pointsPerUnit * screenScale), 1400)
         guard width > 0 else { return }
-        let scale = CGFloat(width) / CGFloat(page.size.width)
-        let height = Int((CGFloat(page.size.height) * scale).rounded())
-        guard let ctx = Bitmaps.context(width: width, height: height) else { return }
-        PageImageRenderer.drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: width, pixelHeight: height,
-                                         origin: .zero, scale: scale)
-        if let data = ctx.data {
-            ink.renderOver(data, width: width, height: height, bytesPerRow: ctx.bytesPerRow, scale: Float(scale),
-                           offsetX: 0, offsetY: 0)
-        }
-        previewLayer.contents = ctx.makeImage()
-        previewValid = true
-        previewDirtyAt = nil
+        let epoch = previewEpoch
+        previewRendering = true
+        inFlight += 1
+        let page = self.page, pdfPage = self.pdfPage, snapshot = ink.snapshot()
+        TileRenderQueue.shared.run({ () -> TileImage in
+            let scale = CGFloat(width) / CGFloat(page.size.width)
+            let height = Int((CGFloat(page.size.height) * scale).rounded())
+            return PageImageRenderer.tile(page: page, pdfPage: pdfPage, background: nil, snapshot: snapshot,
+                                          pixelRect: CGRect(x: 0, y: 0, width: width, height: height), scale: scale)
+        }, done: { [weak self] result in
+            guard let self else { return }
+            self.inFlight -= 1
+            self.previewRendering = false
+            if epoch == self.previewEpoch, let image = result.image {
+                self.previewLayer.contents = image
+                self.previewValid = true
+                self.previewDirtyAt = nil
+            }
+            self.dropStaleIfDone()
+        })
     }
 
     // MARK: Live stroke overlay
@@ -486,6 +557,7 @@ final class PageView: UIView {
         page = newPage
         if backgroundChanged {
             backgroundColor = pdfPage != nil ? .white : PaperRenderer.color(page.paper)
+            previewDirtyAt = nil
             invalidateAll()
         }
         syncElements(newPage.elements)

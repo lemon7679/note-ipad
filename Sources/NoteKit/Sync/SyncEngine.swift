@@ -176,7 +176,18 @@ public actor SyncEngine {
                                        currentItem: RemotePath.name(action.path)))
             }
             do {
-                try await execute(action, remote: remoteItems, report: &report)
+                // Dropped connections and busy-NAS answers are retried a couple of times
+                // (every action is idempotent) before they count as a failure.
+                var attempt = 0
+                while true {
+                    do {
+                        try await execute(action, remote: remoteItems, report: &report)
+                        break
+                    } catch let error as RemoteError where error.isRetryable && attempt < 2 {
+                        attempt += 1
+                        try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                    }
+                }
                 if case .conflictCopy = action { madeCopies = true }
             } catch let error as RemoteError where error.stopsSync {
                 saveState()
@@ -185,7 +196,7 @@ public actor SyncEngine {
                 saveState()
                 throw CancellationError()
             } catch {
-                report.errors.append("\(RemotePath.name(action.path)): \(error.localizedDescription)")
+                report.errors.append("\(action.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))): \(error.localizedDescription)")
             }
             if action.phase != 4 {
                 done += 1

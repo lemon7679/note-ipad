@@ -271,7 +271,9 @@ struct PaperPreview: View {
     }
 }
 
-/// Folder picker for "이동".
+/// Folder picker for "이동". Lists the item's own storage; a file on this iPad (PDF etc.)
+/// can also go to a folder of any connected NAS. Each storage's root row carries that
+/// storage's symbol (this iPad: ipad, NAS: its kind).
 struct MoveSheet: View {
     let source: LibrarySource
     let item: LibraryEntry
@@ -281,22 +283,42 @@ struct MoveSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                let folders = ["/"] + app.library(source).allFolders()
-                ForEach(folders, id: \.self) { folder in
-                    let blocked = RemotePath.isAncestor(item.path, of: folder) || RemotePath.parent(item.path) == folder
-                    Button {
-                        app.move(LibraryRef(source: source, path: item.path), to: folder)
-                        dismiss()
-                    } label: {
-                        Label(folder == "/" ? app.displayName(source) : RemotePath.name(folder), systemImage: "folder")
-                            .padding(.leading, CGFloat(max(RemotePath.depth(folder) - 1, 0)) * 18)
+                Section {
+                    rows(for: source)
+                }
+                if app.canMoveAcross(item, from: source) {
+                    Section {
+                        ForEach(app.accounts) { account in
+                            rows(for: .account(account.id))
+                        }
+                    } header: {
+                        Text("NAS로 옮기기")
+                    } footer: {
+                        Text("NAS의 노트 폴더로 옮기고 다음 동기화 때 올립니다. 이 iPad에서는 지워집니다.")
                     }
-                    .disabled(blocked)
                 }
             }
             .navigationTitle("‘\(item.displayName)’ 이동")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } } }
+        }
+    }
+
+    @ViewBuilder
+    private func rows(for storage: LibrarySource) -> some View {
+        let folders = ["/"] + app.library(storage).allFolders()
+        ForEach(folders, id: \.self) { folder in
+            let blocked = storage == source
+                && (RemotePath.isAncestor(item.path, of: folder) || RemotePath.parent(item.path) == folder)
+            Button {
+                app.move(LibraryRef(source: source, path: item.path), to: LibraryLocation(source: storage, folder: folder))
+                dismiss()
+            } label: {
+                Label(folder == "/" ? app.displayName(storage) : RemotePath.name(folder),
+                      systemImage: folder == "/" ? app.symbolName(storage) : "folder")
+                    .padding(.leading, CGFloat(max(RemotePath.depth(folder) - 1, 0)) * 18)
+            }
+            .disabled(blocked)
         }
     }
 }

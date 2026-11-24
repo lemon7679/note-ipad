@@ -365,46 +365,91 @@ final class EditorModel: ObservableObject {
     func thumbnailsChanged() { thumbnailRevision += 1 }
 
     // MARK: Saving
+    //
+    // What to write is captured on the main thread — ink snapshots (pointer copies, no
+    // serialization) and the document value — and written on one serial writer queue:
+    // serializing big pages, file I/O and the cover thumbnail never stall drawing. The
+    // writer runs saves strictly in capture order, and a synchronous save (close, export,
+    // background) waits for the ones queued before it, so an older autosave can never land
+    // after newer data.
+
+    private let writer = DispatchQueue(label: "note.save", qos: .utility)
+
+    private struct SaveWork: @unchecked Sendable {
+        var ink: [(UUID, InkSnapshot)]
+        var document: NotebookDocument
+        var cover: (NotebookPage, InkSnapshot)?
+        var package: NotebookPackage
+        var pdf: CGPDFDocument?
+    }
 
     private func scheduleSave() {
         autosave?.cancel()
         autosave = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled else { return }
-            self?.save()
-            self?.thumbnailsChanged()
+            guard !Task.isCancelled, let self, let work = self.captureSave() else { return }
+            self.writer.async {
+                let error = Self.write(work)
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if let error { self.saveFailed(work, error) }
+                        self.thumbnailsChanged()
+                    }
+                }
+            }
         }
     }
 
     var hasUnsavedChanges: Bool { documentDirty || !dirtyInk.isEmpty }
 
+    /// Saves now and waits for it (and for any autosave still being written).
     func save() {
         autosave?.cancel()
-        guard hasUnsavedChanges else { return }
+        guard let work = captureSave() else {
+            writer.sync {}   // nothing new, but an autosave may still be writing
+            return
+        }
+        if let error = writer.sync(execute: { Self.write(work) }) { saveFailed(work, error) }
+    }
+
+    private func captureSave() -> SaveWork? {
+        guard hasUnsavedChanges else { return nil }
+        let ink = dirtyInk.filter { document.pageIndex(of: $0) != nil }.compactMap { id in pages[id].map { (id, $0.snapshot()) } }
+        dirtyInk.removeAll()
+        document.modified = Date()
+        document.lastPageIndex = currentPageIndex
+        documentDirty = false
+        let cover = document.pages.first.map { ($0, inkPage($0.id).snapshot()) }
+        return SaveWork(ink: ink, document: document, cover: cover, package: package, pdf: pdf)
+    }
+
+    /// On the writer queue. Returns an error message, or nil.
+    private nonisolated static func write(_ work: SaveWork) -> String? {
         do {
-            for id in dirtyInk {
-                guard document.pageIndex(of: id) != nil, let ink = pages[id], let data = ink.save() else { continue }
-                try package.writeInk(data, pageID: id)
+            for (id, snapshot) in work.ink {
+                if let data = snapshot.save() { try work.package.writeInk(data, pageID: id) }
             }
-            dirtyInk.removeAll()
-            document.modified = Date()
-            document.lastPageIndex = currentPageIndex
-            try package.write(document)
-            package.pruneInk(keeping: document)
-            documentDirty = false
-            writeCoverThumbnail()
+            try work.package.write(work.document)
+            work.package.pruneInk(keeping: work.document)
+            if let (page, snapshot) = work.cover,
+               let cg = PageImageRenderer.image(page: page, snapshot: snapshot, pdf: work.pdf, package: work.package,
+                                                pixelWidth: 360),
+               let png = UIImage(cgImage: cg).pngData() {
+                try? work.package.writeThumbnail(png)
+                ThumbnailCache.shared.invalidate(work.package.url)
+            }
+            return nil
         } catch {
-            lastError = "저장하지 못했습니다. \(error.localizedDescription)"
+            return "저장하지 못했습니다. \(error.localizedDescription)"
         }
     }
 
-    private func writeCoverThumbnail() {
-        guard let first = document.pages.first,
-              let cg = PageImageRenderer.image(page: first, ink: inkPage(first.id), pdf: pdf, package: package,
-                                               pixelWidth: 360),
-              let png = UIImage(cgImage: cg).pngData() else { return }
-        try? package.writeThumbnail(png)
-        ThumbnailCache.shared.invalidate(package.url)
+    private func saveFailed(_ work: SaveWork, _ error: String) {
+        lastError = error
+        // Try again with the next save.
+        dirtyInk.formUnion(work.ink.map(\.0))
+        documentDirty = true
     }
 
     /// Saves and returns a flattened PDF when the account wants PDF copies.

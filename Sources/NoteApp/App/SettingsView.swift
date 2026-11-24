@@ -11,9 +11,14 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("필기") {
+                Section {
                     Toggle("Apple Pencil로만 그리기", isOn: $app.settings.pencilOnly)
                     Toggle("두 손가락 탭: 실행 취소 · 세 손가락 탭: 다시 실행", isOn: $app.settings.tapGesturesUndo)
+                    Toggle("낙서로 지우기", isOn: $app.settings.scribbleToErase)
+                } header: {
+                    Text("필기")
+                } footer: {
+                    Text("낙서로 지우기: 펜으로 글씨 위를 여러 번 왔다 갔다 문지르면 그 아래 필기가 지워집니다.")
                 }
                 Section("새 노트 기본값") {
                     Picker("종이", selection: $app.settings.defaultTemplate) {

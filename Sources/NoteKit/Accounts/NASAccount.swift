@@ -22,7 +22,7 @@ public enum NASKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: return "server.rack"
         case .webdav: return "globe"
-        case .filesFolder: return "folder"
+        case .filesFolder: return "externaldrive.connected.to.line.below"
         }
     }
 }

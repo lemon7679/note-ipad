@@ -135,4 +135,21 @@ final class InkOutlineParserTests: XCTestCase {
         XCTAssertEqual(outlines[1].opacity, 0.2, accuracy: 1e-9)
         XCTAssertTrue(outlines[1].multiply)
     }
+
+    func testParsesEraserHoleMasks() {
+        let svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="200pt" height="100pt" viewBox="0 0 200 100">
+        <g>
+        <mask id="e7" maskUnits="userSpaceOnUse" x="0" y="0" width="50" height="50"><rect x="0" y="0" width="50" height="50" fill="#ffffff"/><polygon points="1,1 4,1 4,4 1,4" fill="#000000"/><polygon points="5,5 6,5 6,6" fill="#000000"/></mask>
+        <path d="M0,0 L40,0 40,40 0,40Z" fill="#ffe45c" mask="url(#e7)" style="mix-blend-mode:multiply"/>
+        <path d="M0,0 L10,0 10,10Z" fill="#1c1c1e"/>
+        </g>
+        </svg>
+        """
+        let outlines = InkOutlineParser.parse(svg)
+        XCTAssertEqual(outlines.count, 2)   // mask shapes are not ink
+        XCTAssertEqual(outlines[0].holes.count, 2)
+        XCTAssertEqual(outlines[0].holes[0], [.init(x: 1, y: 1), .init(x: 4, y: 1), .init(x: 4, y: 4), .init(x: 1, y: 4)])
+        XCTAssertTrue(outlines[1].holes.isEmpty)
+    }
 }

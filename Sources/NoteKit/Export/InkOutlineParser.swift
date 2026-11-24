@@ -19,6 +19,8 @@ public struct InkOutline: Equatable, Sendable {
     /// Path opacity multiplied by its layer's opacity.
     public var opacity: Double
     public var multiply: Bool
+    /// Erased areas (precise eraser) as closed polygons; the ink is not drawn inside them.
+    public var holes: [[Point]] = []
 }
 
 /// Reads the SVG produced by `ink_editor_export_svg`.
@@ -32,7 +34,7 @@ public enum InkOutlineParser {
         return delegate.outlines
     }
 
-    /// "M1,2 L3,4 5,6Z" → points.
+    /// "M1,2 L3,4 5,6Z" (or a polygon's "1,2 3,4 5,6") → points.
     public static func parsePath(_ d: String) -> [InkOutline.Point] {
         var points: [InkOutline.Point] = []
         let cleaned = d.map { "MLZmlz".contains($0) ? " " : $0 }
@@ -47,14 +49,24 @@ public enum InkOutlineParser {
     private final class Delegate: NSObject, XMLParserDelegate {
         var outlines: [InkOutline] = []
         private var groupOpacity: [Double] = []
+        /// `<mask id="…">` of black polygons: the eraser holes of the path that references it.
+        private var masks: [String: [[InkOutline.Point]]] = [:]
+        private var maskID: String?
 
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                     qualifiedName qName: String?, attributes: [String: String] = [:]) {
             switch elementName {
             case "g":
                 groupOpacity.append(Double(attributes["opacity"] ?? "") ?? 1)
+            case "mask":
+                maskID = attributes["id"]
+                if let id = maskID, masks[id] == nil { masks[id] = [] }
+            case "polygon":
+                guard let id = maskID, let points = attributes["points"] else { return }
+                let pts = InkOutlineParser.parsePath(points)
+                if pts.count >= 3 { masks[id, default: []].append(pts) }
             case "path":
-                guard let d = attributes["d"], let fill = attributes["fill"] else { return }
+                guard maskID == nil, let d = attributes["d"], let fill = attributes["fill"] else { return }
                 let pts = InkOutlineParser.parsePath(d)
                 guard pts.count >= 2 else { return }
                 let layer = groupOpacity.reduce(1, *)
@@ -63,7 +75,8 @@ public enum InkOutlineParser {
                     colorHex: fill,
                     strokeWidth: Double(attributes["stroke-width"] ?? "") ?? 0,
                     opacity: (Double(attributes["opacity"] ?? "") ?? 1) * layer,
-                    multiply: (attributes["style"] ?? "").contains("multiply")))
+                    multiply: (attributes["style"] ?? "").contains("multiply"),
+                    holes: InkOutlineParser.maskReference(attributes["mask"]).flatMap { masks[$0] } ?? []))
             default:
                 break
             }
@@ -71,8 +84,21 @@ public enum InkOutlineParser {
 
         func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
                     qualifiedName qName: String?) {
-            if elementName == "g", !groupOpacity.isEmpty { groupOpacity.removeLast() }
+            switch elementName {
+            case "g":
+                if !groupOpacity.isEmpty { groupOpacity.removeLast() }
+            case "mask":
+                maskID = nil
+            default:
+                break
+            }
         }
+    }
+
+    /// `url(#e12)` → `e12`.
+    static func maskReference(_ value: String?) -> String? {
+        guard let t = value?.trimmingCharacters(in: .whitespaces), t.hasPrefix("url(#"), t.hasSuffix(")") else { return nil }
+        return String(t.dropFirst(5).dropLast())
     }
 }
 

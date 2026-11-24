@@ -8,7 +8,9 @@ import InkEngine
 // these types; `Sources/InkBridgeStub` mirrors them for CI builds without the
 // engine, so keep the two files' public API identical.
 //
-// Engine objects are not thread-safe: use them from the main thread.
+// StrokeBuilder and InkPage are not thread-safe: use them from the main thread. An
+// InkSnapshot is an immutable copy of a page's ink that may be rendered and saved on
+// any thread (tile workers, autosave) while the page keeps changing.
 
 public typealias StrokeID = UInt64
 
@@ -218,17 +220,72 @@ public final class StrokeBuilder {
     }
 }
 
+// MARK: - Snapshot
+
+/// Immutable view of a page's ink at one moment (strokes are shared, not copied).
+/// Rendering and saving are thread-safe, so tile workers and the autosave queue use it
+/// while the page keeps changing on the main thread. Released when the last owner lets go.
+public final class InkSnapshot: @unchecked Sendable {
+    let raw: OpaquePointer
+
+    init(raw: OpaquePointer) { self.raw = raw }
+
+    deinit { ink_snapshot_release(raw) }
+
+    public var strokeCount: Int { Int(ink_snapshot_stroke_count(raw)) }
+
+    /// Same pixels as `InkPage.renderOver` at the time of the snapshot.
+    public func renderOver(_ pixels: UnsafeMutableRawPointer, width: Int, height: Int, bytesPerRow: Int,
+                           scale: Float, offsetX: Float, offsetY: Float) {
+        ink_snapshot_render_over_rgba(raw, pixels.assumingMemoryBound(to: UInt8.self), Int32(width), Int32(height),
+                                      bytesPerRow, scale, offsetX, offsetY)
+    }
+
+    /// Same bytes as `InkPage.save` at the time of the snapshot.
+    public func save() -> Data? {
+        var size = 0
+        guard let ptr = ink_snapshot_save(raw, &size) else { return nil }
+        defer { ink_free(ptr) }
+        return Data(bytes: ptr, count: size)
+    }
+}
+
 // MARK: - Page
 
 /// One page of ink with its own undo history.
 public final class InkPage {
     let raw: OpaquePointer
+    private var cachedSnapshot: InkSnapshot?
 
     public init(width: Float, height: Float) {
         raw = ink_editor_create(width, height)
     }
 
-    deinit { ink_editor_destroy(raw) }
+    deinit {
+        cachedSnapshot = nil
+        ink_editor_destroy(raw)
+    }
+
+    /// Bumped by every change to the ink (or to the hidden set): render results older than this are stale.
+    public private(set) var version: UInt64 = 0
+
+    private func changed() {
+        version &+= 1
+        cachedSnapshot = nil
+    }
+
+    private func edit<T>(_ result: T) -> T {
+        changed()
+        return result
+    }
+
+    /// The current ink as an immutable snapshot, shared until the next change.
+    public func snapshot() -> InkSnapshot {
+        if let s = cachedSnapshot { return s }
+        let s = InkSnapshot(raw: ink_editor_snapshot(raw))
+        cachedSnapshot = s
+        return s
+    }
 
     public static var engineVersion: String { String(cString: ink_version()) }
 
@@ -240,10 +297,10 @@ public final class InkPage {
 
     /// Adds the builder's finished stroke (after `end()`); 0 on failure.
     @discardableResult
-    public func commit(_ builder: StrokeBuilder) -> StrokeID { ink_editor_commit(raw, builder.raw) }
+    public func commit(_ builder: StrokeBuilder) -> StrokeID { edit(ink_editor_commit(raw, builder.raw)) }
 
-    @discardableResult public func undo() -> Bool { ink_editor_undo(raw) }
-    @discardableResult public func redo() -> Bool { ink_editor_redo(raw) }
+    @discardableResult public func undo() -> Bool { edit(ink_editor_undo(raw)) }
+    @discardableResult public func redo() -> Bool { edit(ink_editor_redo(raw)) }
 
     // Eraser
 
@@ -251,11 +308,16 @@ public final class InkPage {
         let mask: UInt32 = highlighterOnly ? (1 << UInt32(BrushKind.highlighter.rawValue)) : 0
         ink_editor_erase_begin(raw, InkEraserMode(rawValue: UInt32(mode.rawValue)), radius, mask,
                                Float(point.x), Float(point.y))
+        changed()
     }
 
     @discardableResult
-    public func eraseMove(to point: CGPoint) -> Bool { ink_editor_erase_move(raw, Float(point.x), Float(point.y)) }
-    public func eraseEnd() { ink_editor_erase_end(raw) }
+    public func eraseMove(to point: CGPoint) -> Bool {
+        let erased = ink_editor_erase_move(raw, Float(point.x), Float(point.y))
+        if erased { changed() }
+        return erased
+    }
+    public func eraseEnd() { edit(ink_editor_erase_end(raw)) }
 
     // Selection & editing
 
@@ -276,19 +338,19 @@ public final class InkPage {
     @discardableResult
     public func transform(_ ids: [StrokeID], _ t: InkAffine) -> Bool {
         guard !ids.isEmpty else { return false }
-        return ink_editor_transform(raw, ids, ids.count, t.a, t.b, t.c, t.d, t.tx, t.ty)
+        return edit(ink_editor_transform(raw, ids, ids.count, t.a, t.b, t.c, t.d, t.tx, t.ty))
     }
 
     @discardableResult
     public func recolor(_ ids: [StrokeID], _ color: InkRGBA) -> Bool {
         guard !ids.isEmpty else { return false }
-        return ink_editor_recolor(raw, ids, ids.count, color.raw)
+        return edit(ink_editor_recolor(raw, ids, ids.count, color.raw))
     }
 
     @discardableResult
     public func delete(_ ids: [StrokeID]) -> Bool {
         guard !ids.isEmpty else { return false }
-        return ink_editor_delete(raw, ids, ids.count)
+        return edit(ink_editor_delete(raw, ids, ids.count))
     }
 
     public func duplicate(_ ids: [StrokeID], dx: Float, dy: Float) -> [StrokeID] {
@@ -296,6 +358,7 @@ public final class InkPage {
         let capacity = ids.count
         var out = [StrokeID](repeating: 0, count: capacity)
         let n = ink_editor_duplicate(raw, ids, ids.count, dx, dy, &out, capacity)
+        changed()
         return Array(out.prefix(min(Int(n), capacity)))
     }
 
@@ -324,6 +387,7 @@ public final class InkPage {
             guard let base = buf.bindMemory(to: UInt8.self).baseAddress else { return 0 }
             return Int(ink_editor_paste_strokes(raw, base, count, dx, dy, &out, capacity))
         }
+        changed()
         return Array(out.prefix(min(n, capacity)))
     }
 
@@ -331,14 +395,14 @@ public final class InkPage {
     @discardableResult
     public func correct(_ ids: [StrokeID], strength: Float) -> Bool {
         guard !ids.isEmpty else { return false }
-        return ink_editor_correct(raw, ids, ids.count, strength)
+        return edit(ink_editor_correct(raw, ids, ids.count, strength))
     }
 
     /// 줄 정렬 (one undo step).
     @discardableResult
     public func straighten(_ ids: [StrokeID], strength: Float) -> Bool {
         guard !ids.isEmpty else { return false }
-        return ink_editor_straighten(raw, ids, ids.count, strength)
+        return edit(ink_editor_straighten(raw, ids, ids.count, strength))
     }
 
     /// Page area changed since the last call (`.null` if none).
@@ -363,6 +427,7 @@ public final class InkPage {
 
     /// Strokes skipped by `renderOver` (while a selection is being dragged).
     public func setHidden(_ ids: [StrokeID]) {
+        changed()
         if ids.isEmpty {
             ink_editor_set_hidden(raw, nil, 0)
         } else {
@@ -381,6 +446,7 @@ public final class InkPage {
 
     @discardableResult
     public func load(_ data: Data) -> Bool {
+        changed()
         let count = data.count
         return data.withUnsafeBytes { buf -> Bool in
             guard let base = buf.bindMemory(to: UInt8.self).baseAddress else { return false }
