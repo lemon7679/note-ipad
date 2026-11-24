@@ -39,7 +39,8 @@ for screen in library editor pdf connect settings; do
   xcrun simctl terminate "$UDID" com.lemon7679.note > /dev/null 2>&1 || true
   xcrun simctl launch "$UDID" com.lemon7679.note -NoteDemoScreen "$screen"
   sleep 9
-  if ! xcrun simctl spawn "$UDID" launchctl list | grep -q "com.lemon7679.note"; then
+  # grep reads everything (no -q): an early exit would SIGPIPE launchctl and fail the pipe.
+  if ! xcrun simctl spawn "$UDID" launchctl list | grep "com.lemon7679.note" > /dev/null; then
     echo "APP NOT RUNNING after opening '$screen' (crash?)"
     status=1
   fi
