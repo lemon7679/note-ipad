@@ -139,6 +139,74 @@ public struct NotebookPackage: Hashable, Sendable {
 
     // MARK: Copies
 
+    /// Makes a new, separate notebook in `directory` from the pages `pageIDs` of this one
+    /// (in this notebook's order): their ink, text, images, paper and bookmarks.
+    ///
+    /// When the pages sit on the notebook's PDF, `subsetPDF` may write a PDF holding only
+    /// the PDF pages used (given zero-based, in order) to the destination URL and return
+    /// true; the new pages then point into that smaller PDF. Without it (or when it fails)
+    /// the whole PDF is copied and the pages keep their page numbers.
+    @discardableResult
+    public func extractPages(_ pageIDs: [UUID], title: String, into directory: URL,
+                             subsetPDF: ((_ source: URL, _ pageIndices: [Int], _ destination: URL) -> Bool)? = nil,
+                             fileManager: FileManager = .default) throws -> NotebookPackage {
+        let source = try readDocument()
+        let wanted = Set(pageIDs)
+        let picked = source.pages.filter { wanted.contains($0.id) }
+        guard !picked.isEmpty else { throw CocoaError(.fileReadNoSuchFile) }
+
+        var doc = NotebookDocument(title: title, cover: source.cover, paper: source.defaultPaper,
+                                   size: picked[0].size, pageCount: 0)
+        // Fresh page and element ids: the new notebook never shares files with this one.
+        var inkCopies: [(from: UUID, to: UUID)] = []
+        var assets: Set<String> = []
+        doc.pages = picked.map { (page: NotebookPage) -> NotebookPage in
+            var copy = page
+            copy.id = UUID()
+            copy.elements = page.elements.map { var e = $0; e.id = UUID(); return e }
+            for element in page.elements { if let asset = element.asset { assets.insert(asset) } }
+            inkCopies.append((page.id, copy.id))
+            return copy
+        }
+
+        let pdfIndices = picked.compactMap(\.background.pdfPageIndex)
+        var pdfFile: (from: URL, to: String)?
+        if let pdf = source.pdf, !pdfIndices.isEmpty {
+            doc.pdf = PDFSource(file: pdf.file, originalName: pdf.originalName)
+            pdfFile = (assetURL(pdf.file), pdf.file)
+        }
+
+        let target = try Self.create(in: directory, document: doc, fileManager: fileManager)
+        do {
+            for (from, to) in inkCopies where fileManager.fileExists(atPath: inkURL(pageID: from).path) {
+                try fileManager.copyItem(at: inkURL(pageID: from), to: target.inkURL(pageID: to))
+            }
+            for asset in assets where fileManager.fileExists(atPath: assetURL(asset).path) {
+                try fileManager.copyItem(at: assetURL(asset), to: target.assetURL(asset))
+            }
+            if let pdfFile {
+                let from = pdfFile.from, destination = target.assetURL(pdfFile.to)
+                let used = Array(Set(pdfIndices)).sorted()
+                if let subsetPDF, subsetPDF(from, used, destination) {
+                    let renumber = Dictionary(uniqueKeysWithValues: used.enumerated().map { ($1, $0) })
+                    for i in doc.pages.indices {
+                        if let old = doc.pages[i].background.pdfPageIndex, let new = renumber[old] {
+                            doc.pages[i].background = .pdf(pageIndex: new)
+                        }
+                    }
+                    try target.write(doc)
+                } else {
+                    try? fileManager.removeItem(at: destination)
+                    try fileManager.copyItem(at: from, to: destination)
+                }
+            }
+        } catch {
+            try? fileManager.removeItem(at: target.url)
+            throw error
+        }
+        return target
+    }
+
     /// Copies the package into `directory` with a fresh notebook id (a separate notebook,
     /// e.g. "복제" or a sync conflict copy).
     @discardableResult

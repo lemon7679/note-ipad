@@ -52,6 +52,8 @@ final class EditorModel: ObservableObject {
     @Published var toolWheel: CGPoint?
     @Published private(set) var thumbnailRevision = 0
     @Published var searchResults: [SearchHit] = []
+    /// Pages picked in the page list to make a new notebook from (nil: not picking).
+    @Published var pageSelection: Set<UUID>?
     @Published var lastError: String?
 
     let pdf: CGPDFDocument?
@@ -461,6 +463,76 @@ final class EditorModel: ObservableObject {
         save()
         let exporter: () -> URL? = { [weak self] in try? self?.exportPDF() }
         app.documentClosed(OpenDocument(ref: ref, url: package.url, kind: .notebook), exportPDF: exporter)
+    }
+
+    // MARK: New notebook from pages
+
+    func beginPageSelection(with index: Int? = nil) {
+        pageSelection = Set([document.pages[safe: index ?? currentPageIndex]?.id].compactMap { $0 })
+        showsSidebar = true
+    }
+
+    func togglePageSelection(_ id: UUID) {
+        guard var selection = pageSelection else { return }
+        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+        pageSelection = selection
+    }
+
+    func selectAllPages() {
+        guard pageSelection != nil else { return }
+        pageSelection = pageSelection?.count == pageCount ? [] : Set(document.pages.map(\.id))
+    }
+
+    /// "운영체제 3–5, 8쪽": the default title for a notebook made of the selected pages.
+    func suggestedTitle(for selection: Set<UUID>) -> String {
+        let numbers = document.pages.indices.filter { selection.contains(document.pages[$0].id) }.map { $0 + 1 }
+        var parts: [String] = []
+        var i = 0
+        while i < numbers.count {
+            var j = i
+            while j + 1 < numbers.count, numbers[j + 1] == numbers[j] + 1 { j += 1 }
+            parts.append(i == j ? "\(numbers[i])" : "\(numbers[i])–\(numbers[j])")
+            i = j + 1
+        }
+        return "\(document.title) \(parts.joined(separator: ", "))쪽"
+    }
+
+    /// Saves, then writes the selected pages as a new notebook next to this one.
+    func makeNotebook(from selection: Set<UUID>, title: String) -> LibraryRef? {
+        save()
+        let clean = title.trimmingCharacters(in: .whitespaces)
+        let folder = RemotePath.parent(ref.path)
+        let lib = app.library(ref.source)
+        let ids = document.pages.map(\.id).filter { selection.contains($0) }
+        do {
+            let made = try package.extractPages(ids, title: clean.isEmpty ? suggestedTitle(for: selection) : clean,
+                                                into: lib.url(for: folder), subsetPDF: Self.writePDFSubset)
+            app.refreshLibrary()
+            app.localChange(in: ref.source)
+            pageSelection = nil
+            return LibraryRef(source: ref.source, path: RemotePath.join(folder, made.url.lastPathComponent))
+        } catch {
+            lastError = "새 노트를 만들지 못했습니다. \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// A PDF of only the given pages (zero-based, in order), so the new notebook stays small.
+    nonisolated static func writePDFSubset(source: URL, pageIndices: [Int], destination: URL) -> Bool {
+        guard let original = PDFDocument(url: source) else { return false }
+        let subset = PDFDocument()
+        for (n, index) in pageIndices.enumerated() {
+            guard let page = original.page(at: index)?.copy() as? PDFPage else { return false }
+            subset.insert(page, at: n)
+        }
+        return subset.pageCount == pageIndices.count && subset.write(to: destination)
+    }
+
+    /// Closes this notebook and opens another one (e.g. the one just made from its pages).
+    func closeAndOpen(_ other: LibraryRef) {
+        close()
+        let app = self.app
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { app.openNotebook(other) }
     }
 
     // MARK: Export

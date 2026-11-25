@@ -50,6 +50,10 @@ struct NotebookEditorView: View {
     @State private var newTitle = ""
     @State private var shareItem: ShareItem?
     @State private var toolRowWidth: CGFloat = 0
+    /// Pages waiting for a title before they become a new notebook.
+    @State private var extracting: Set<UUID>?
+    @State private var extractTitle = ""
+    @State private var madeNotebook: LibraryRef?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,7 +61,10 @@ struct NotebookEditorView: View {
             toolRow
             HStack(spacing: 0) {
                 if model.showsSidebar {
-                    PageSidebar(model: model)
+                    PageSidebar(model: model) { selection in
+                        extractTitle = model.suggestedTitle(for: selection)
+                        extracting = selection
+                    }
                         .frame(width: 132)
                         .transition(.move(edge: .leading))
                 }
@@ -84,6 +91,25 @@ struct NotebookEditorView: View {
             TextField("제목", text: $newTitle)
             Button("취소", role: .cancel) {}
             Button("변경") { model.rename(newTitle) }
+        }
+        .alert("선택한 \(extracting?.count ?? 0)쪽으로 새 노트 만들기",
+               isPresented: Binding(get: { extracting != nil }, set: { if !$0 { extracting = nil } })) {
+            TextField("제목", text: $extractTitle)
+            Button("취소", role: .cancel) {}
+            Button("만들기") {
+                if let selection = extracting { madeNotebook = model.makeNotebook(from: selection, title: extractTitle) }
+            }
+        } message: {
+            Text("필기 · 이미지 · 텍스트 · PDF 배경을 그대로 옮긴 새 노트를 이 노트와 같은 폴더에 만듭니다. 이 노트는 바뀌지 않습니다.")
+        }
+        .alert("새 노트를 만들었습니다",
+               isPresented: Binding(get: { madeNotebook != nil }, set: { if !$0 { madeNotebook = nil } })) {
+            Button("계속 편집", role: .cancel) {}
+            Button("새 노트 열기") {
+                if let ref = madeNotebook { model.closeAndOpen(ref) }
+            }
+        } message: {
+            Text(madeNotebook.map { FileNaming.split(RemotePath.name($0.path)).base } ?? "")
         }
         .alert("오류", isPresented: Binding(get: { model.lastError != nil }, set: { if !$0 { model.lastError = nil } })) {
             Button("확인", role: .cancel) {}
@@ -165,6 +191,10 @@ struct NotebookEditorView: View {
                     Label("현재 페이지 복제", systemImage: "plus.square.on.square")
                 }
                 Button { showPaper = true } label: { Label("종이 바꾸기", systemImage: "doc.text") }
+                Divider()
+                Button { model.beginPageSelection() } label: {
+                    Label("페이지를 골라 새 노트로", systemImage: "doc.on.doc")
+                }
             } label: {
                 Image(systemName: "doc.badge.plus").font(.system(size: 20))
                     .frame(width: NoteTheme.minTouch, height: NoteTheme.minTouch)
@@ -563,8 +593,62 @@ struct PenSettingsView: View {
 
 struct PageSidebar: View {
     @ObservedObject var model: EditorModel
+    /// "새 노트로" in page-selection mode.
+    var makeNotebook: (Set<UUID>) -> Void = { _ in }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if let selection = model.pageSelection {
+                selectionHeader(selection)
+            }
+            pageList
+            if let selection = model.pageSelection {
+                selectionFooter(selection)
+            }
+        }
+        .background(NoteTheme.background)
+        .overlay(alignment: .trailing) { Rectangle().fill(NoteTheme.separator).frame(width: 1) }
+    }
+
+    private func selectionHeader(_ selection: Set<UUID>) -> some View {
+        VStack(spacing: 6) {
+            Text(selection.isEmpty ? "페이지 선택" : "\(selection.count)쪽 선택됨")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(NoteTheme.textPrimary)
+            HStack(spacing: 4) {
+                Button(selection.count == model.pageCount ? "선택 해제" : "모두") { model.selectAllPages() }
+                Spacer(minLength: 0)
+                Button("취소") { model.pageSelection = nil }
+            }
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(NoteTheme.accent)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(NoteTheme.surface)
+        .overlay(alignment: .bottom) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
+    }
+
+    private func selectionFooter(_ selection: Set<UUID>) -> some View {
+        Button {
+            makeNotebook(selection)
+        } label: {
+            Label("새 노트로", systemImage: "doc.badge.plus")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: NoteTheme.minTouch)
+                .foregroundStyle(.white)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(selection.isEmpty ? NoteTheme.textSecondary.opacity(0.4) : NoteTheme.accent))
+        }
+        .buttonStyle(.plain)
+        .disabled(selection.isEmpty)
+        .padding(8)
+        .background(NoteTheme.surface)
+        .overlay(alignment: .top) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
+        .accessibilityLabel("선택한 페이지로 새 노트 만들기")
+    }
+
+    private var pageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 14) {
@@ -593,12 +677,12 @@ struct PageSidebar: View {
                 }
             }
         }
-        .background(NoteTheme.background)
-        .overlay(alignment: .trailing) { Rectangle().fill(NoteTheme.separator).frame(width: 1) }
     }
 
     private func thumbnail(_ page: NotebookPage, index: Int) -> some View {
-        let selected = index == model.currentPageIndex
+        let selecting = model.pageSelection != nil
+        let picked = model.pageSelection?.contains(page.id) == true
+        let selected = selecting ? picked : index == model.currentPageIndex
         let aspect = CGFloat(page.size.height / max(page.size.width, 1))
         _ = model.thumbnailRevision
         return VStack(spacing: 4) {
@@ -620,15 +704,31 @@ struct PageSidebar: View {
                         .padding(4)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if selecting {
+                    Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(picked ? NoteTheme.accent : NoteTheme.textSecondary)
+                        .background(Circle().fill(Color.white).padding(2))
+                        .padding(4)
+                }
+            }
             Text("\(index + 1)").font(.system(size: 12, weight: selected ? .semibold : .regular))
                 .foregroundStyle(selected ? NoteTheme.accent : NoteTheme.textSecondary)
         }
         .contentShape(Rectangle())
-        .onTapGesture { model.go(to: index) }
+        .onTapGesture {
+            if selecting { model.togglePageSelection(page.id) } else { model.go(to: index) }
+        }
         .contextMenu {
             Button { model.insertPage(before: index) } label: { Label("앞에 페이지 추가", systemImage: "arrow.up.doc") }
             Button { model.addPage(after: index) } label: { Label("뒤에 페이지 추가", systemImage: "arrow.down.doc") }
             Button { model.duplicatePage(at: index) } label: { Label("복제", systemImage: "plus.square.on.square") }
+            if !selecting {
+                Button { model.beginPageSelection(with: index) } label: {
+                    Label("선택해서 새 노트로", systemImage: "doc.on.doc")
+                }
+            }
             Button { model.toggleBookmark(at: index) } label: {
                 Label(page.bookmarked ? "책갈피 해제" : "책갈피", systemImage: "bookmark")
             }
@@ -645,6 +745,7 @@ struct PageSidebar: View {
         }
         .accessibilityLabel("\(index + 1)쪽")
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityHint(selecting ? "탭하면 새 노트에 넣을 페이지로 선택하거나 해제합니다" : "")
     }
 }
 

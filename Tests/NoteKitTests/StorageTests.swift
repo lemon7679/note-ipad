@@ -50,6 +50,53 @@ final class NotebookPackageTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: package.assetURL("source.pdf").path))
     }
 
+    func testExtractPagesMakesASeparateNotebook() throws {
+        let dir = try TempDir()
+        let pdf = dir.url.appendingPathComponent("교재.pdf")
+        try Data("%PDF-1.4 fake".utf8).write(to: pdf)
+        let sizes = (0..<5).map { _ in PageSize(width: 612, height: 792) }
+        let package = try NotebookPackage.createAnnotating(pdfURL: pdf, title: "교재", pageSizes: sizes,
+                                                           in: dir.sub("lib"), linkedPath: "/교재.pdf")
+        var doc = try package.readDocument()
+        let image = try package.addAsset(data: Data([7]), fileExtension: "jpg")
+        doc.pages[3].elements = [PageElement(kind: .image, frame: ElementFrame(x: 0, y: 0, width: 10, height: 10),
+                                             asset: image)]
+        doc.pages[3].bookmarked = true
+        try package.write(doc)
+        try package.writeInk(Data([4]), pageID: doc.pages[3].id)
+        try package.writeInk(Data([2]), pageID: doc.pages[1].id)
+
+        // Selection order does not matter: the notebook's page order is kept.
+        let ids = [doc.pages[3].id, doc.pages[1].id]
+
+        // Whole PDF copied: page numbers stay.
+        let whole = try package.extractPages(ids, title: "발췌", into: dir.sub("lib"))
+        let wholeDoc = try whole.readDocument()
+        XCTAssertNotEqual(wholeDoc.id, doc.id)
+        XCTAssertEqual(wholeDoc.title, "발췌")
+        XCTAssertEqual(wholeDoc.pages.map(\.background), [.pdf(pageIndex: 1), .pdf(pageIndex: 3)])
+        XCTAssertEqual(wholeDoc.pages.map(\.bookmarked), [false, true])
+        XCTAssertNil(wholeDoc.pdf?.linkedPath)
+        XCTAssertFalse(wholeDoc.pages.contains { doc.pages.map(\.id).contains($0.id) })
+        XCTAssertEqual(whole.readInk(pageID: wholeDoc.pages[0].id), Data([2]))
+        XCTAssertEqual(whole.readInk(pageID: wholeDoc.pages[1].id), Data([4]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: whole.assetURL(image).path))
+        XCTAssertEqual(try Data(contentsOf: whole.assetURL("source.pdf")), try Data(contentsOf: pdf))
+
+        // Subset PDF: pages are renumbered into it.
+        var asked: [Int] = []
+        let subset = try package.extractPages(ids, title: "발췌", into: dir.sub("lib")) { _, indices, destination in
+            asked = indices
+            return (try? Data("%PDF subset".utf8).write(to: destination)) != nil
+        }
+        XCTAssertEqual(subset.url.lastPathComponent, "발췌 2.inknote")
+        XCTAssertEqual(asked, [1, 3])
+        XCTAssertEqual(try subset.readDocument().pages.map(\.background), [.pdf(pageIndex: 0), .pdf(pageIndex: 1)])
+
+        // The original is untouched.
+        XCTAssertEqual(try package.readDocument(), doc)
+    }
+
     func testNewerFormatIsRejected() throws {
         let dir = try TempDir()
         var doc = NotebookDocument(title: "미래")
