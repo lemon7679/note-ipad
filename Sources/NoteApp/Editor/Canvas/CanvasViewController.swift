@@ -128,6 +128,10 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
         let pencil = UIPencilInteraction()
         pencil.delegate = self
         view.addInteraction(pencil)
+        // Where the pencil hovers (iPad Pro / Air with hover): the tool wheel opens there.
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(pencilHovered(_:)))
+        hover.cancelsTouchesInView = false
+        view.addGestureRecognizer(hover)
 
         let two = UITapGestureRecognizer(target: self, action: #selector(twoFingerTapped))
         two.numberOfTouchesRequired = 2
@@ -474,6 +478,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             return
         }
         let touch = activeTouch!
+        notePencilTouch(touch)
         defer {
             activeTouch = nil
             activePage = nil
@@ -792,19 +797,57 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     @objc private func twoFingerTapped() { model.undo() }
     @objc private func threeFingerTapped() { model.redo() }
 
+    /// Last pencil position (hover or touch) in `view` coordinates, for placing the tool wheel.
+    private var lastPencilPoint: CGPoint?
+
+    @objc private func pencilHovered(_ g: UIHoverGestureRecognizer) {
+        if g.state == .began || g.state == .changed { lastPencilPoint = g.location(in: view) }
+    }
+
+    private func notePencilTouch(_ touch: UITouch) {
+        if touch.type == .pencil { lastPencilPoint = touch.location(in: view) }
+    }
+
+    /// Pencil 2 double tap (iOS 17.0–17.4 path).
     func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-        switch UIPencilInteraction.preferredTapAction {
-        case .ignore:
+        guard UIPencilInteraction.preferredTapAction != .ignore else { return }
+        pencilButton(at: nil)
+    }
+
+    /// Pencil 2 double tap / Pencil Pro double tap with the hover position.
+    @available(iOS 17.5, *)
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+        guard UIPencilInteraction.preferredTapAction != .ignore else { return }
+        pencilButton(at: tap.hoverPose?.location)
+    }
+
+    /// Pencil Pro squeeze.
+    @available(iOS 17.5, *)
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+        guard squeeze.phase == .ended, UIPencilInteraction.preferredSqueezeAction != .ignore else { return }
+        pencilButton(at: squeeze.hoverPose?.location)
+    }
+
+    private func pencilButton(at hover: CGPoint?) {
+        switch settings.pencilButtonAction {
+        case .none:
             return
-        case .showColorPalette, .showInkAttributes:
-            return
-        default:
+        case .eraser:
+            model.toolWheel = nil
             if tools.tool == .eraser {
                 model.tools.select(tools.lastInkTool)
             } else {
                 model.tools.select(.eraser)
             }
             applySettings()
+        case .wheel:
+            if model.toolWheel != nil {
+                model.toolWheel = nil
+                return
+            }
+            guard case .idle = interaction else { return }
+            haptics.impactOccurred()
+            model.toolWheel = hover ?? lastPencilPoint ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY)
         }
     }
 

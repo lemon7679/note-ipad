@@ -20,8 +20,11 @@ struct NewItemSheet: View {
     @State private var cover: String? = CoverStyle.palette[0]
     @State private var template: PaperTemplate = .ruled
     @State private var paperColor: PaperColor = .white
-    @State private var size: PageSizePreset = .a4
+    /// nil = 직접 입력 (custom millimeters).
+    @State private var size: PageSizePreset? = .a4
     @State private var landscape = false
+    @State private var customWidth: Double = 210
+    @State private var customHeight: Double = 297
     @State private var importing = false
 
     init(location: LibraryLocation, initialMode: NewItemMode) {
@@ -73,7 +76,6 @@ struct NewItemSheet: View {
     private func create() {
         switch mode {
         case .notebook:
-            let pageSize = landscape ? size.size.landscape : size.size.portrait
             dismiss()
             app.createNotebook(in: location, title: title.trimmingCharacters(in: .whitespaces), coverHex: cover,
                                paper: PaperStyle(template: template, color: paperColor), size: pageSize)
@@ -92,8 +94,8 @@ struct NewItemSheet: View {
                     if let cover {
                         NotebookCover(title: title.isEmpty ? "새 노트" : title, colorHex: cover)
                     } else {
-                        PaperPreview(paper: PaperStyle(template: template, color: paperColor),
-                                     size: landscape ? size.size.landscape : size.size.portrait)
+                        PaperPreview(paper: PaperStyle(template: template, color: paperColor), size: pageSize)
+                            .aspectRatio(CGFloat(pageSize.width / pageSize.height), contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                             .shadow(color: .black.opacity(0.12), radius: 8, y: 6)
                     }
@@ -140,23 +142,7 @@ struct NewItemSheet: View {
                         SectionLabel(text: "종이")
                         PaperTemplateGrid(selection: $template, color: paperColor)
                     }
-                    HStack(spacing: 16) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            SectionLabel(text: "크기")
-                            Picker("크기", selection: $size) {
-                                ForEach([PageSizePreset.a4, .b5, .letter, .a5]) { Text($0.displayName).tag($0) }
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            SectionLabel(text: "방향")
-                            Picker("방향", selection: $landscape) {
-                                Text("세로").tag(false)
-                                Text("가로").tag(true)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                    }
+                    sizeSection
                     VStack(alignment: .leading, spacing: 8) {
                         SectionLabel(text: "종이 색")
                         Picker("종이 색", selection: $paperColor) {
@@ -169,6 +155,80 @@ struct NewItemSheet: View {
                 .padding(24)
             }
         }
+    }
+
+    /// Page size of the new notebook (points).
+    private var pageSize: PageSize {
+        guard let size else { return PageSize.millimeters(width: customWidth, height: customHeight) }
+        return landscape ? size.size.landscape : size.size.portrait
+    }
+
+    private var sizeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                SectionLabel(text: "크기")
+                Spacer()
+                Text(pageSize.millimeterLabel)
+                    .font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary)
+            }
+            Picker("크기", selection: $size) {
+                ForEach([PageSizePreset.a4, .b5, .a5, .letter, .screen]) { Text($0.displayName).tag(Optional($0)) }
+                Text("직접 입력").tag(PageSizePreset?.none)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: size) { old, new in
+                // Start the custom size from the size that was showing.
+                if new == nil, let old {
+                    let s = landscape ? old.size.landscape : old.size.portrait
+                    customWidth = s.widthMM.rounded()
+                    customHeight = s.heightMM.rounded()
+                }
+            }
+            if size == nil {
+                HStack(spacing: 10) {
+                    millimeterField("너비", value: $customWidth)
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(NoteTheme.iconMuted)
+                    millimeterField("높이", value: $customHeight)
+                }
+                Text("한 변 \(Int(PageSize.customRangeMM.lowerBound))–\(Int(PageSize.customRangeMM.upperBound)) mm")
+                    .font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary)
+            }
+            HStack {
+                Text("방향").font(NoteTheme.Fonts.body)
+                Spacer()
+                Picker("방향", selection: Binding(get: { pageSize.width > pageSize.height }, set: setLandscape)) {
+                    Text("세로").tag(false)
+                    Text("가로").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+        }
+    }
+
+    private func setLandscape(_ value: Bool) {
+        landscape = value
+        if size == nil, (customWidth > customHeight) != value {
+            let width = customWidth
+            customWidth = customHeight
+            customHeight = width
+        }
+    }
+
+    private func millimeterField(_ title: String, value: Binding<Double>) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary)
+            TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 16))
+            Text("mm").font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(NoteTheme.surface, in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
+        .overlay(RoundedRectangle(cornerRadius: NoteTheme.Radius.control).stroke(NoteTheme.controlBorder))
     }
 
     private var locationRow: some View {

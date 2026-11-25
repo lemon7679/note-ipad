@@ -97,6 +97,25 @@ struct OpenDocument: Identifiable, Hashable {
     var id: String { ref.id + (isRemoteCopy ? "#remote" : "") }
 }
 
+/// What the Apple Pencil's button does (double tap on Pencil 2, squeeze on Pencil Pro).
+enum PencilButtonAction: String, Codable, CaseIterable, Identifiable {
+    /// Opens the tool wheel (tools, colors, width, pen settings) at the pencil tip.
+    case wheel
+    /// Switches between the eraser and the last pen.
+    case eraser
+    case none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .wheel: return "휠 메뉴"
+        case .eraser: return "지우개 전환"
+        case .none: return "사용 안 함"
+        }
+    }
+}
+
 /// App-wide preferences (UserDefaults).
 struct AppSettings: Codable, Equatable {
     /// Only Apple Pencil draws; fingers scroll and zoom.
@@ -105,6 +124,8 @@ struct AppSettings: Codable, Equatable {
     var tapGesturesUndo = true
     /// 낙서로 지우기: scribbling back and forth over ink with the pen erases it.
     var scribbleToErase = true
+    /// Pencil double tap / squeeze.
+    var pencilButtonAction: PencilButtonAction = .wheel
     var defaultTemplate: PaperTemplate = .ruled
     var defaultPaperColor: PaperColor = .white
     var defaultSize: PageSizePreset = .a4
@@ -138,6 +159,8 @@ extension AppSettings {
         pencilOnly = try c.decodeIfPresent(Bool.self, forKey: .pencilOnly) ?? pencilOnly
         tapGesturesUndo = try c.decodeIfPresent(Bool.self, forKey: .tapGesturesUndo) ?? tapGesturesUndo
         scribbleToErase = try c.decodeIfPresent(Bool.self, forKey: .scribbleToErase) ?? scribbleToErase
+        pencilButtonAction = (try? c.decodeIfPresent(PencilButtonAction.self, forKey: .pencilButtonAction))
+            ?? pencilButtonAction
         defaultTemplate = (try? c.decodeIfPresent(PaperTemplate.self, forKey: .defaultTemplate)) ?? defaultTemplate
         defaultPaperColor = (try? c.decodeIfPresent(PaperColor.self, forKey: .defaultPaperColor)) ?? defaultPaperColor
         defaultSize = (try? c.decodeIfPresent(PageSizePreset.self, forKey: .defaultSize)) ?? defaultSize

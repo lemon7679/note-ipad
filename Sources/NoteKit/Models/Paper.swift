@@ -117,6 +117,25 @@ public struct PageSize: Codable, Equatable, Hashable, Sendable {
 
     public var landscape: PageSize { PageSize(width: max(width, height), height: min(width, height)) }
     public var portrait: PageSize { PageSize(width: min(width, height), height: max(width, height)) }
+
+    /// Allowed side length of a custom page, in millimeters.
+    public static let customRangeMM: ClosedRange<Double> = 50...1200
+
+    /// A custom page size from millimeters, each side clamped to `customRangeMM`.
+    public static func millimeters(width: Double, height: Double) -> PageSize {
+        func side(_ v: Double) -> Double {
+            Units.mm(min(max(v.isFinite ? v : 0, customRangeMM.lowerBound), customRangeMM.upperBound))
+        }
+        return PageSize(width: side(width), height: side(height))
+    }
+
+    public var widthMM: Double { width * 25.4 / 72 }
+    public var heightMM: Double { height * 25.4 / 72 }
+
+    /// "210 × 297 mm".
+    public var millimeterLabel: String {
+        String(format: "%.0f × %.0f mm", widthMM.rounded(), heightMM.rounded())
+    }
 }
 
 /// Notebook cover. `nil` color = no cover (first page is shown).

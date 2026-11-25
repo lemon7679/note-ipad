@@ -47,6 +47,8 @@ final class EditorModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published var showsSidebar = true
+    /// Center of the pencil-button tool wheel in canvas view coordinates (nil = closed).
+    @Published var toolWheel: CGPoint?
     @Published private(set) var thumbnailRevision = 0
     @Published var searchResults: [SearchHit] = []
     @Published var lastError: String?
