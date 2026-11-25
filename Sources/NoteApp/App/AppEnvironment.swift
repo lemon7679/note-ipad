@@ -116,6 +116,23 @@ enum PencilButtonAction: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How a notebook's pages are laid out in the editor.
+enum PageLayout: String, Codable, CaseIterable, Identifiable {
+    /// One continuous vertical scroll.
+    case vertical
+    /// One page per screen; swipe sideways to turn pages.
+    case horizontal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .vertical: return "세로 스크롤"
+        case .horizontal: return "옆으로 넘기기"
+        }
+    }
+}
+
 /// App-wide preferences (UserDefaults).
 struct AppSettings: Codable, Equatable {
     /// Only Apple Pencil draws; fingers scroll and zoom.
@@ -126,6 +143,8 @@ struct AppSettings: Codable, Equatable {
     var scribbleToErase = true
     /// Pencil double tap / squeeze.
     var pencilButtonAction: PencilButtonAction = .wheel
+    /// Continuous vertical scroll or sideways page turning.
+    var pageLayout: PageLayout = .vertical
     var defaultTemplate: PaperTemplate = .ruled
     var defaultPaperColor: PaperColor = .white
     var defaultSize: PageSizePreset = .a4
@@ -161,6 +180,7 @@ extension AppSettings {
         scribbleToErase = try c.decodeIfPresent(Bool.self, forKey: .scribbleToErase) ?? scribbleToErase
         pencilButtonAction = (try? c.decodeIfPresent(PencilButtonAction.self, forKey: .pencilButtonAction))
             ?? pencilButtonAction
+        pageLayout = (try? c.decodeIfPresent(PageLayout.self, forKey: .pageLayout)) ?? pageLayout
         defaultTemplate = (try? c.decodeIfPresent(PaperTemplate.self, forKey: .defaultTemplate)) ?? defaultTemplate
         defaultPaperColor = (try? c.decodeIfPresent(PaperColor.self, forKey: .defaultPaperColor)) ?? defaultPaperColor
         defaultSize = (try? c.decodeIfPresent(PageSizePreset.self, forKey: .defaultSize)) ?? defaultSize

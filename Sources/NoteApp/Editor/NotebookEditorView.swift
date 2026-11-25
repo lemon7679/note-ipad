@@ -202,6 +202,10 @@ struct NotebookEditorView: View {
                         NotificationCenter.default.post(name: .canvasPaste, object: nil)
                     } label: { Label("붙여넣기", systemImage: "doc.on.clipboard") }
                 }
+                Toggle(isOn: Binding(get: { app.settings.pageLayout == .horizontal },
+                                     set: { app.settings.pageLayout = $0 ? .horizontal : .vertical })) {
+                    Label("옆으로 넘기기", systemImage: "book.pages")
+                }
                 Toggle(isOn: Binding(get: { !app.settings.pencilOnly }, set: { app.settings.pencilOnly = !$0 })) {
                     Label("손가락으로 그리기", systemImage: "hand.draw")
                 }

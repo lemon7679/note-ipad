@@ -57,7 +57,10 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     private var pageFrames: [CGRect] = []
     private var pageViews: [UUID: PageView] = [:]
     private var layoutScale: CGFloat = 1
-    private var lastLayoutWidth: CGFloat = 0
+    private var lastLayoutSize: CGSize = .zero
+    /// The layout the pages were last arranged in (vertical scroll or sideways pages).
+    private var layoutMode: PageLayout = .vertical
+    private var horizontal: Bool { layoutMode == .horizontal }
     private var renderZoom: CGFloat = 1
     private var displayLink: CADisplayLink?
     private let builder = StrokeBuilder(kind: .ballpoint)
@@ -172,7 +175,10 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if abs(scrollView.bounds.width - lastLayoutWidth) > 0.5 {
+        let size = scrollView.bounds.size
+        // Sideways pages fit the screen height too, so a height change re-lays them out.
+        if abs(size.width - lastLayoutSize.width) > 0.5
+            || (horizontal && abs(size.height - lastLayoutSize.height) > 0.5) {
             let index = model.currentPageIndex
             relayout()
             scrollToPage(index, animated: false)
@@ -195,6 +201,18 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             pv.textEditingEnabled = tool == .text
         }
         if tool != .lasso { clearSelection() }
+        if settings.pageLayout != layoutMode {
+            let index = model.currentPageIndex
+            layoutMode = settings.pageLayout
+            scrollView.alwaysBounceVertical = !horizontal
+            scrollView.alwaysBounceHorizontal = horizontal
+            scrollView.decelerationRate = horizontal ? .fast : .normal
+            scrollView.setZoomScale(1, animated: false)
+            renderZoom = 1
+            for pv in pageViews.values { pv.zoomChanged(1) }
+            relayout()
+            scrollToPage(index, animated: false)
+        }
     }
 
     // MARK: Layout
@@ -202,18 +220,32 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     private func relayout() {
         let width = scrollView.bounds.width
         guard width > 0 else { return }
-        lastLayoutWidth = width
+        lastLayoutSize = scrollView.bounds.size
         let margin: CGFloat = width > 700 ? 40 : 12
         let maxPageWidth = CGFloat(model.document.pages.map(\.size.width).max() ?? 595)
-        layoutScale = max((width - margin * 2) / maxPageWidth, 0.1)
-        var y: CGFloat = 24
-        pageFrames = model.document.pages.map { page in
-            let w = CGFloat(page.size.width) * layoutScale, h = CGFloat(page.size.height) * layoutScale
-            let frame = CGRect(x: ((width - w) / 2).rounded(), y: y.rounded(), width: w.rounded(), height: h.rounded())
-            y += h + 24
-            return frame
+        let contentSize: CGSize
+        if horizontal {
+            // One page per screen-sized slot, side by side; each page fits its slot whole.
+            let height = max(scrollView.bounds.height, 1)
+            let maxPageHeight = CGFloat(model.document.pages.map(\.size.height).max() ?? 842)
+            layoutScale = max(min((width - margin * 2) / maxPageWidth, (height - 32) / maxPageHeight), 0.1)
+            pageFrames = model.document.pages.enumerated().map { index, page in
+                let w = CGFloat(page.size.width) * layoutScale, h = CGFloat(page.size.height) * layoutScale
+                return CGRect(x: (CGFloat(index) * width + (width - w) / 2).rounded(), y: ((height - h) / 2).rounded(),
+                              width: w.rounded(), height: h.rounded())
+            }
+            contentSize = CGSize(width: width * CGFloat(max(pageFrames.count, 1)), height: height)
+        } else {
+            layoutScale = max((width - margin * 2) / maxPageWidth, 0.1)
+            var y: CGFloat = 24
+            pageFrames = model.document.pages.map { page in
+                let w = CGFloat(page.size.width) * layoutScale, h = CGFloat(page.size.height) * layoutScale
+                let frame = CGRect(x: ((width - w) / 2).rounded(), y: y.rounded(), width: w.rounded(), height: h.rounded())
+                y += h + 24
+                return frame
+            }
+            contentSize = CGSize(width: width, height: y + 80)
         }
-        let contentSize = CGSize(width: width, height: y + 80)
         let zoom = scrollView.zoomScale
         contentView.bounds = CGRect(origin: .zero, size: contentSize)
         contentView.center = CGPoint(x: contentSize.width * zoom / 2, y: contentSize.height * zoom / 2)
@@ -230,7 +262,8 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     private func centerContent() {
         let size = contentView.frame.size
         let insetX = max(0, (scrollView.bounds.width - size.width) / 2)
-        scrollView.contentInset = UIEdgeInsets(top: 0, left: insetX, bottom: 0, right: insetX)
+        let insetY = horizontal ? max(0, (scrollView.bounds.height - size.height) / 2) : 0
+        scrollView.contentInset = UIEdgeInsets(top: insetY, left: insetX, bottom: insetY, right: insetX)
     }
 
     private var currentRenderScale: CGFloat { layoutScale * renderZoom * screenScale }
@@ -238,7 +271,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     private func updateVisiblePages() {
         guard !pageFrames.isEmpty else { return }
         let visible = scrollView.convert(scrollView.bounds, to: contentView)
-        let keepAlive = visible.insetBy(dx: 0, dy: -visible.height)
+        let keepAlive = horizontal ? visible.insetBy(dx: -visible.width, dy: 0) : visible.insetBy(dx: 0, dy: -visible.height)
         let pages = model.document.pages
         var wanted = Set<UUID>()
         for (index, frame) in pageFrames.enumerated() where frame.intersects(keepAlive) && index < pages.count {
@@ -272,10 +305,11 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             pv.removeFromSuperview()
             pageViews[id] = nil
         }
-        // Current page = the one under the middle of the screen.
+        // Current page = the one under the middle of the screen (sideways: the nearest one).
         let mid = CGPoint(x: visible.midX, y: visible.midY)
-        if let index = pageFrames.firstIndex(where: { $0.insetBy(dx: -12, dy: -12).contains(mid) }),
-           index != model.currentPageIndex {
+        let found = horizontal ? nearestPageIndex(toX: mid.x)
+            : pageFrames.firstIndex(where: { $0.insetBy(dx: -12, dy: -12).contains(mid) })
+        if let index = found, index != model.currentPageIndex {
             model.currentPageIndex = index
         }
     }
@@ -299,7 +333,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
         guard queue.inFlight < limit else { return }
         let mid = scrollView.convert(CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY), to: contentView)
         let ordered = pageViews.values.filter(\.hasPendingWork).sorted {
-            abs($0.frame.midY - mid.y) < abs($1.frame.midY - mid.y)
+            hypot($0.frame.midX - mid.x, $0.frame.midY - mid.y) < hypot($1.frame.midX - mid.x, $1.frame.midY - mid.y)
         }
         for pv in ordered {
             if queue.inFlight >= limit { break }
@@ -321,6 +355,68 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateVisiblePages()
         if selection != nil { editMenu?.dismissMenu() }
+    }
+
+    /// The page a sideways swipe started on: a flick turns exactly one page from it.
+    private var dragStartPage = 0
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragStartPage = model.currentPageIndex
+    }
+
+    /// Sideways pages: a swipe ends on a whole page — the next or previous one for a flick,
+    /// otherwise the one that fills most of the screen. Zoomed in, the page pans freely
+    /// until its edge, and a swipe past the edge turns to the neighbouring page.
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard horizontal, !pageFrames.isEmpty else { return }
+        let zoom = scrollView.zoomScale
+        let slot = scrollView.bounds.width
+        let current = min(dragStartPage, pageFrames.count - 1)
+        let frame = pageFrames[current]
+        let minX = frame.minX * zoom - 16, maxX = frame.maxX * zoom - slot + 16
+        if zoom > 1.01, maxX > minX {
+            // Zoomed in: stay inside the current page unless the swipe pushes past its edge.
+            let start = scrollView.contentOffset.x
+            if start <= minX - slot * 0.12 || (start <= minX + 1 && velocity.x < -0.6), current > 0 {
+                turnTo(current - 1, target: targetContentOffset)
+            } else if start >= maxX + slot * 0.12 || (start >= maxX - 1 && velocity.x > 0.6),
+                      current < pageFrames.count - 1 {
+                turnTo(current + 1, target: targetContentOffset)
+            } else {
+                targetContentOffset.pointee.x = min(max(targetContentOffset.pointee.x, minX), maxX)
+            }
+            return
+        }
+        let mid = (scrollView.contentOffset.x + slot / 2) / zoom
+        var index = nearestPageIndex(toX: mid) ?? current
+        if velocity.x > 0.3 { index = min(current + 1, pageFrames.count - 1) }
+        if velocity.x < -0.3 { index = max(current - 1, 0) }
+        turnTo(index, target: targetContentOffset)
+    }
+
+    private func turnTo(_ index: Int, target: UnsafeMutablePointer<CGPoint>) {
+        target.pointee = pageOffset(index)
+    }
+
+    /// The content offset that shows page `index` (sideways: centred in the screen).
+    private func pageOffset(_ index: Int) -> CGPoint {
+        let zoom = scrollView.zoomScale
+        let frame = pageFrames[index]
+        let inset = scrollView.contentInset
+        let maxX = max(-inset.left, scrollView.contentSize.width - scrollView.bounds.width + inset.right)
+        let maxY = max(-inset.top, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)
+        if horizontal {
+            let x = frame.midX * zoom - scrollView.bounds.width / 2
+            let y = zoom > 1.01 ? scrollView.contentOffset.y : frame.midY * zoom - scrollView.bounds.height / 2
+            return CGPoint(x: min(max(x, -inset.left), maxX), y: min(max(y, -inset.top), maxY))
+        }
+        let y = max(0, frame.minY * zoom - 16)
+        return CGPoint(x: scrollView.contentOffset.x, y: min(y, maxY))
+    }
+
+    private func nearestPageIndex(toX x: CGFloat) -> Int? {
+        pageFrames.indices.min { abs(pageFrames[$0].midX - x) < abs(pageFrames[$1].midX - x) }
     }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -876,10 +972,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
 
     func scrollToPage(_ index: Int, animated: Bool) {
         guard pageFrames.indices.contains(index) else { return }
-        let zoom = scrollView.zoomScale
-        let y = max(0, pageFrames[index].minY * zoom - 16)
-        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: min(y, maxY)), animated: animated)
+        scrollView.setContentOffset(pageOffset(index), animated: animated)
         updateVisiblePages()
     }
 
