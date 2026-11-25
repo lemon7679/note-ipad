@@ -261,6 +261,56 @@ public final class LibraryFileSystem: @unchecked Sendable {
         try fm.copyItem(at: source, to: url(for: target))
         return target
     }
+
+    /// Copies `path` of another library source — a file, or a notebook package — into `folder`
+    /// under a unique name, and checks that every file arrived complete. A partial copy is
+    /// removed. The original is left for the caller to delete.
+    @discardableResult
+    public func copy(_ path: String, from other: LibraryFileSystem, into folder: String) throws -> String {
+        let original = other.url(for: path)
+        let name = RemotePath.name(path)
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: original.path, isDirectory: &isDirectory) else { throw LibraryError.notFound(path) }
+        let isPackage = isDirectory.boolValue && RemotePath.pathExtension(name) == FileNaming.notebookExtension
+        guard !isDirectory.boolValue || isPackage else { throw LibraryError.notFound(path) }
+        let label = isPackage ? FileNaming.split(name).base : name
+        var copied: String?
+        do {
+            if isPackage {
+                let (base, ext) = FileNaming.split(name)
+                let target = RemotePath.join(folder, FileNaming.unique(base: base, ext: ext) { exists(RemotePath.join(folder, $0)) })
+                try fm.createDirectory(at: url(for: folder), withIntermediateDirectories: true)
+                copied = target
+                try fm.copyItem(at: original, to: url(for: target))
+            } else {
+                copied = try importFile(from: original, into: folder, preferredName: name)
+            }
+        } catch {
+            if let copied { try? fm.removeItem(at: url(for: copied)) }
+            throw LibraryError.incompleteCopy(label)
+        }
+        guard let copied, contentSize(url(for: copied)) == contentSize(original) else {
+            if let copied { try? fm.removeItem(at: url(for: copied)) }
+            throw LibraryError.incompleteCopy(label)
+        }
+        return copied
+    }
+
+    /// Number of files and total bytes under `url` (a file counts as one).
+    private func contentSize(_ url: URL) -> [Int64] {
+        func size(_ u: URL) -> Int64 { ((try? fm.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.int64Value ?? 0 }
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return [-1, -1] }
+        guard isDirectory.boolValue else { return [1, size(url)] }
+        guard let children = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else { return [-1, -1] }
+        var files: Int64 = 0, bytes: Int64 = 0
+        for case let child as URL in children {
+            guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            files += 1
+            bytes += size(child)
+        }
+        return [files, bytes]
+    }
 }
 
 /// Deleted items, kept until emptied. One bin per library source.

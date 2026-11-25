@@ -112,6 +112,37 @@ final class LibraryFileSystemTests: XCTestCase {
         XCTAssertEqual(restored, "/강의/노트.inknote")
         XCTAssertTrue(trash.entries().isEmpty)
     }
+
+    func testNotebookAndFileCopyToAnotherSource() throws {
+        let dir = try TempDir()
+        let device = LibraryFileSystem(root: dir.sub("device"))
+        let nas = LibraryFileSystem(root: dir.sub("nas"))
+        let pdf = dir.url.appendingPathComponent("모의고사.pdf")
+        try Data((0..<2048).map { UInt8($0 % 256) }).write(to: pdf)
+        let package = try NotebookPackage.createAnnotating(pdfURL: pdf, title: "모의고사",
+                                                           pageSizes: [PageSize(width: 595, height: 842)], in: device.root)
+        let doc = try package.readDocument()
+        try package.writeInk(Data([4, 5, 6]), pageID: doc.pages[0].id)
+        let notePath = "/" + package.url.lastPathComponent
+        let folder = try nas.createFolder(named: "국어", in: "/")
+        try NotebookPackage.create(in: nas.url(for: folder), document: NotebookDocument(title: "모의고사"))
+
+        let copied = try nas.copy(notePath, from: device, into: folder)
+        XCTAssertEqual(copied, "/국어/모의고사 2.inknote")
+        let back = NotebookPackage(url: nas.url(for: copied))
+        XCTAssertEqual(try back.readDocument().id, doc.id)
+        XCTAssertEqual(back.readInk(pageID: doc.pages[0].id), Data([4, 5, 6]))
+        XCTAssertEqual(try Data(contentsOf: back.assetURL("source.pdf")).count, 2048)
+        XCTAssertEqual(try nas.list(folder).first { $0.path == copied }?.kind, .notebook)
+        // The original stays until the caller removes it.
+        XCTAssertTrue(device.exists(notePath))
+
+        try device.importFile(from: pdf, into: "/")
+        XCTAssertEqual(try nas.copy("/모의고사.pdf", from: device, into: "/"), "/모의고사.pdf")
+        XCTAssertEqual(try Data(contentsOf: nas.url(for: "/모의고사.pdf")).count, 2048)
+
+        XCTAssertThrowsError(try nas.copy("/없음.inknote", from: device, into: "/"))
+    }
 }
 
 final class InkOutlineParserTests: XCTestCase {

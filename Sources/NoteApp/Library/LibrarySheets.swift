@@ -271,8 +271,8 @@ struct PaperPreview: View {
     }
 }
 
-/// Folder picker for "이동". Lists the item's own storage; a file on this iPad (PDF etc.)
-/// can also go to a folder of any connected NAS. Each storage's root row carries that
+/// Folder picker for "이동". Lists the item's own storage; a note or file on this iPad
+/// (anything but a folder) can also go to a folder of any connected NAS. Each storage's root row carries that
 /// storage's symbol (this iPad: ipad, NAS: its kind).
 struct MoveSheet: View {
     let source: LibrarySource
