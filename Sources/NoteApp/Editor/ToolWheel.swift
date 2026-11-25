@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import InkBridge
 import NoteKit
 import SwiftUI
 
