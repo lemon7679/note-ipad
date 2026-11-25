@@ -65,8 +65,8 @@ struct NotebookEditorView: View {
                     CanvasView(model: model, settings: app.settings)
                         .ignoresSafeArea(edges: .bottom)
                     bottomOverlay
-                    if let anchor = model.toolWheel {
-                        ToolWheel(model: model, anchor: anchor) {
+                    if model.toolWheel != nil {
+                        ToolWheel(model: model) {
                             // Let the tool row show the pen button before presenting its popover.
                             DispatchQueue.main.async { showPenSettings = true }
                         }

@@ -31,7 +31,7 @@ struct IconButton: View {
 
 /// Highlights a control while the Apple Pencil hovers over it (or a trackpad pointer), so you can
 /// see which option the pencil tip will pick before it touches the screen: the control grows
-/// slightly, gets a soft accent fill and an accent ring.
+/// slightly and gets a soft accent fill (no outline).
 ///
 /// Uses `onContinuousHover`, which iPadOS drives from Apple Pencil hover as well as the pointer.
 /// `onHover` reports enter/exit, e.g. to show the hovered option's name.
@@ -45,8 +45,7 @@ struct HoverHighlight<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         let on = hovering && isEnabled
         content
-            .background(shape.fill(NoteTheme.accent.opacity(on ? 0.14 : 0)))
-            .overlay(shape.stroke(NoteTheme.accent, lineWidth: 2).opacity(on ? 1 : 0))
+            .background(shape.fill(NoteTheme.accent.opacity(on ? 0.16 : 0)))
             .scaleEffect(on ? scale : 1)
             .animation(.easeOut(duration: 0.12), value: on)
             .onContinuousHover { phase in
