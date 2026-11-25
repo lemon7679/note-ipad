@@ -76,6 +76,8 @@ final class PageView: UIView {
     /// Worker jobs started by this page that have not come back yet.
     private var inFlight = 0
     private var elementViews: [UUID: ElementView] = [:]
+    /// Image being moved or resized: left out of the tiles while its view follows the finger.
+    private var liftedElement: UUID?
     var elementsInteractive = false {
         didSet { elementViews.values.forEach { $0.isUserInteractionEnabled = elementsInteractive } }
     }
@@ -307,10 +309,10 @@ final class PageView: UIView {
         tile.renderingEpoch = epoch
         inFlight += 1
         let page = self.page, pdfPage = self.pdfPage, background = tile.background
-        let snapshot = ink.snapshot(), scale = renderScale
+        let snapshot = ink.snapshot(), scale = renderScale, package = self.package, lifted = liftedElement
         TileRenderQueue.shared.run({
             PageImageRenderer.tile(page: page, pdfPage: pdfPage, background: background, snapshot: snapshot,
-                                   pixelRect: px, scale: scale)
+                                   package: package, lifted: lifted, pixelRect: px, scale: scale)
         }, done: { [weak self] result in
             guard let self else { return }
             self.inFlight -= 1
@@ -355,6 +357,8 @@ final class PageView: UIView {
                                              origin: px.origin, scale: renderScale)
             if pdfPage != nil { tile.background = ctx.makeImage() }
         }
+        ElementDrawing.drawImages(page.elements, package: package, in: ctx, pixelHeight: h, origin: px.origin,
+                                  scale: renderScale, skip: liftedElement)
         if let data = ctx.data {
             ink.renderOver(data, width: w, height: h, bytesPerRow: ctx.bytesPerRow, scale: Float(renderScale),
                            offsetX: Float(-px.minX), offsetY: Float(-px.minY))
@@ -400,10 +404,12 @@ final class PageView: UIView {
         previewRendering = true
         inFlight += 1
         let page = self.page, pdfPage = self.pdfPage, snapshot = ink.snapshot()
+        let package = self.package, lifted = liftedElement
         TileRenderQueue.shared.run({ () -> TileImage in
             let scale = CGFloat(width) / CGFloat(page.size.width)
             let height = Int((CGFloat(page.size.height) * scale).rounded())
             return PageImageRenderer.tile(page: page, pdfPage: pdfPage, background: nil, snapshot: snapshot,
+                                          package: package, lifted: lifted,
                                           pixelRect: CGRect(x: 0, y: 0, width: width, height: height), scale: scale)
         }, done: { [weak self] result in
             guard let self else { return }
@@ -554,13 +560,33 @@ final class PageView: UIView {
 
     func updatePage(_ newPage: NotebookPage) {
         let backgroundChanged = newPage.paper != page.paper || newPage.size != page.size
+        let oldImages = page.elements.filter { $0.kind == .image }
+        let newImages = newPage.elements.filter { $0.kind == .image }
         page = newPage
         if backgroundChanged {
             backgroundColor = pdfPage != nil ? .white : PaperRenderer.color(page.paper)
             previewDirtyAt = nil
             invalidateAll()
+        } else if oldImages != newImages {
+            // Images are drawn into the tiles (under the ink): redraw where one appeared, moved or went away.
+            var dirty = CGRect.null
+            let changed = oldImages.map(\.id) != newImages.map(\.id)
+                ? oldImages + newImages
+                : oldImages.filter { !newImages.contains($0) } + newImages.filter { !oldImages.contains($0) }
+            for e in changed { dirty = dirty.union(Self.rect(e)) }
+            invalidate(dirty)
         }
         syncElements(newPage.elements)
+    }
+
+    private static func rect(_ e: PageElement) -> CGRect {
+        CGRect(x: e.frame.x, y: e.frame.y, width: e.frame.width, height: e.frame.height)
+    }
+
+    /// An image's view starts or stops following the finger: take it out of the tiles meanwhile.
+    private func setLifted(_ element: PageElement?, original: PageElement) {
+        liftedElement = element?.id
+        invalidate(Self.rect(original))
     }
 
     func syncElements(_ elements: [PageElement]) {
@@ -578,6 +604,7 @@ final class PageView: UIView {
                 view.textEditable = textEditingEnabled
                 view.onChange = { [weak self] in self?.onElementChange?($0) }
                 view.onDelete = { [weak self] in self?.onElementDelete?($0) }
+                view.onLift = { [weak self] lifted, original in self?.setLifted(lifted ? original : nil, original: original) }
                 addSubview(view)
                 elementViews[element.id] = view
             }
@@ -599,12 +626,18 @@ final class ElementView: UIView, UITextViewDelegate {
     var pointsPerUnit: CGFloat { didSet { applyFrame() } }
     var onChange: ((PageElement) -> Void)?
     var onDelete: ((UUID) -> Void)?
+    /// Images: true when a move/resize starts, false when it ends (with the frame from before it).
+    var onLift: ((Bool, PageElement) -> Void)?
     var textEditable = false { didSet { textView?.isEditable = textEditable } }
 
     private var textView: UITextView?
     private var imageView: UIImageView?
     private var panStart: CGPoint = .zero
     private var pinchStart: ElementFrame?
+    /// The image as it was when the current move/resize began.
+    private var liftedFrom: PageElement?
+    /// Move and resize gestures running now (they can overlap).
+    private var liftGestures = 0
 
     init(element: PageElement, package: NotebookPackage, pointsPerUnit: CGFloat) {
         self.element = element
@@ -626,6 +659,9 @@ final class ElementView: UIView, UITextViewDelegate {
             let iv = UIImageView()
             iv.contentMode = .scaleAspectFit
             if let name = element.asset { iv.image = UIImage(contentsOfFile: package.assetURL(name).path) }
+            // The image itself is drawn in the page tiles, under the ink; this view only shows
+            // while the image is being moved or resized.
+            iv.isHidden = true
             addSubview(iv)
             imageView = iv
             let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
@@ -699,18 +735,48 @@ final class ElementView: UIView, UITextViewDelegate {
         onChange?(element)
     }
 
+    private func lift() {
+        guard let imageView else { return }
+        liftGestures += 1
+        guard liftedFrom == nil else { return }
+        liftedFrom = element
+        imageView.isHidden = false
+        onLift?(true, element)
+    }
+
+    /// Ends a move/resize: the image goes back into the tiles (at its new place if `commit`).
+    private func drop(commit: Bool) {
+        if imageView != nil {
+            liftGestures = max(0, liftGestures - 1)
+            if liftGestures > 0 { return }   // the other gesture finishes the job
+        }
+        if let original = liftedFrom {
+            liftedFrom = nil
+            imageView?.isHidden = true
+            if !commit {
+                element = original
+                applyFrame()
+            }
+            onLift?(false, original)
+        }
+        if commit { onChange?(element) }
+    }
+
     @objc private func panned(_ g: UIPanGestureRecognizer) {
         guard let superview else { return }
         switch g.state {
         case .began:
             panStart = CGPoint(x: element.frame.x, y: element.frame.y)
+            lift()
         case .changed:
             let t = g.translation(in: superview)
             element.frame.x = Double(panStart.x + t.x / pointsPerUnit)
             element.frame.y = Double(panStart.y + t.y / pointsPerUnit)
             applyFrame()
         case .ended:
-            onChange?(element)
+            drop(commit: true)
+        case .cancelled:
+            drop(commit: false)
         default:
             break
         }
@@ -720,6 +786,7 @@ final class ElementView: UIView, UITextViewDelegate {
         switch g.state {
         case .began:
             pinchStart = element.frame
+            lift()
         case .changed:
             guard let start = pinchStart else { return }
             let s = Double(g.scale)
@@ -727,7 +794,9 @@ final class ElementView: UIView, UITextViewDelegate {
                                          width: start.width * s, height: start.height * s)
             applyFrame()
         case .ended:
-            onChange?(element)
+            drop(commit: true)
+        case .cancelled:
+            drop(commit: false)
         default:
             break
         }

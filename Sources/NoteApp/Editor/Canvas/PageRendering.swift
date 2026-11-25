@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import CoreGraphics
+import ImageIO
 import InkBridge
 import NoteKit
 import UIKit
@@ -220,9 +221,10 @@ enum PageImageRenderer {
         ctx.restoreGState()
     }
 
-    /// One tile on a worker thread: background (cached PDF image, or drawn now) + ink snapshot.
+    /// One tile on a worker thread: background (cached PDF image, or drawn now) + images + ink snapshot.
+    /// `lifted` is an image being dragged, left out so it is not drawn twice.
     static func tile(page: NotebookPage, pdfPage: CGPDFPage?, background: CGImage?, snapshot: InkSnapshot,
-                                 pixelRect px: CGRect, scale: CGFloat) -> TileImage {
+                     package: NotebookPackage?, lifted: UUID? = nil, pixelRect px: CGRect, scale: CGFloat) -> TileImage {
         let w = Int(px.width), h = Int(px.height)
         guard w > 0, h > 0, let ctx = Bitmaps.context(width: w, height: h) else { return TileImage() }
         var drawnBackground: CGImage?
@@ -233,6 +235,8 @@ enum PageImageRenderer {
                            scale: scale)
             if pdfPage != nil { drawnBackground = ctx.makeImage() }
         }
+        ElementDrawing.drawImages(page.elements, package: package, in: ctx, pixelHeight: h, origin: px.origin,
+                                  scale: scale, skip: lifted)
         if let data = ctx.data {
             snapshot.renderOver(data, width: w, height: h, bytesPerRow: ctx.bytesPerRow, scale: Float(scale),
                                 offsetX: Float(-px.minX), offsetY: Float(-px.minY))
@@ -263,21 +267,60 @@ enum PageImageRenderer {
         let pdfPage = page.background.pdfPageIndex.flatMap { pdf?.page(at: $0 + 1) }
         drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: pixelWidth, pixelHeight: pixelHeight,
                        origin: .zero, scale: scale)
+        // Images under the ink, text boxes over it (as on the canvas).
+        ElementDrawing.drawImages(page.elements, package: package, in: ctx, pixelHeight: pixelHeight, origin: .zero,
+                                  scale: scale)
         if let data = ctx.data {
             drawInk(data, pixelWidth, pixelHeight, ctx.bytesPerRow, Float(scale))
         }
-        if !page.elements.isEmpty {
+        if page.elements.contains(where: { $0.kind == .text }) {
             ctx.saveGState()
             Bitmaps.enterPageSpace(ctx, pixelHeight: pixelHeight, origin: .zero, scale: scale)
-            ElementDrawing.draw(page.elements, package: package, in: ctx)
+            ElementDrawing.draw(page.elements, package: package, in: ctx, kind: .text)
             ctx.restoreGState()
         }
         return ctx.makeImage()
     }
 }
 
-/// Text boxes and images drawn with Core Graphics (thumbnails, export).
+/// Text boxes and images drawn with Core Graphics (canvas tiles, thumbnails, export).
+///
+/// Images sit between the paper and the ink, so the pen always writes on top of a photo;
+/// text boxes are above the ink.
 enum ElementDrawing {
+    /// Decoded images (at most 2048 px on a side) by file path; NSCache is thread-safe.
+    private static let images: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.totalCostLimit = 96 * 1024 * 1024
+        return cache
+    }()
+
+    static func cgImage(package: NotebookPackage, name: String) -> CGImage? {
+        let path = package.assetURL(name).path
+        if let cached = images.object(forKey: path as NSString) { return cached }
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2048,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        images.setObject(image, forKey: path as NSString, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
+    /// Images of `elements` into a bitmap context (y up) holding the region starting at pixel
+    /// `origin` of a page rendered at `scale` pixels per unit.
+    static func drawImages(_ elements: [PageElement], package: NotebookPackage?, in ctx: CGContext, pixelHeight: Int,
+                           origin: CGPoint, scale: CGFloat, skip: UUID? = nil) {
+        guard package != nil, elements.contains(where: { $0.kind == .image && $0.id != skip }) else { return }
+        ctx.saveGState()
+        Bitmaps.enterPageSpace(ctx, pixelHeight: pixelHeight, origin: origin, scale: scale)
+        draw(elements, package: package, in: ctx, kind: .image, skip: skip)
+        ctx.restoreGState()
+    }
+
     static func textAttributes(_ element: PageElement) -> [NSAttributedString.Key: Any] {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byWordWrapping
@@ -288,11 +331,12 @@ enum ElementDrawing {
         ]
     }
 
-    /// `ctx` is y-down in page units.
-    static func draw(_ elements: [PageElement], package: NotebookPackage?, in ctx: CGContext) {
+    /// `ctx` is y-down in page units. `kind` limits drawing to text boxes or images.
+    static func draw(_ elements: [PageElement], package: NotebookPackage?, in ctx: CGContext,
+                     kind: PageElement.Kind? = nil, skip: UUID? = nil) {
         UIGraphicsPushContext(ctx)
         defer { UIGraphicsPopContext() }
-        for element in elements {
+        for element in elements where element.id != skip && (kind == nil || element.kind == kind) {
             let rect = CGRect(x: element.frame.x, y: element.frame.y, width: element.frame.width,
                               height: element.frame.height)
             switch element.kind {
@@ -300,8 +344,14 @@ enum ElementDrawing {
                 ((element.text ?? "") as NSString).draw(with: rect, options: [.usesLineFragmentOrigin],
                                                         attributes: textAttributes(element), context: nil)
             case .image:
-                if let name = element.asset, let package, let image = UIImage(contentsOfFile: package.assetURL(name).path) {
-                    image.draw(in: rect)
+                if let name = element.asset, let package, let image = cgImage(package: package, name: name) {
+                    // Core Graphics draws images y-up: flip within the element's rect.
+                    ctx.saveGState()
+                    ctx.translateBy(x: rect.minX, y: rect.maxY)
+                    ctx.scaleBy(x: 1, y: -1)
+                    ctx.interpolationQuality = .high
+                    ctx.draw(image, in: CGRect(origin: .zero, size: rect.size))
+                    ctx.restoreGState()
                 }
             }
         }
@@ -327,10 +377,11 @@ enum NotebookPDFExporter {
                     ctx.fill(bounds)
                     PaperRenderer.draw(page.paper, size: page.size, in: ctx)
                 }
+                ElementDrawing.draw(page.elements, package: package, in: ctx, kind: .image)
                 if let inkPage = inkPages[page.id] {
                     drawOutlines(InkOutlineParser.parse(inkPage.exportSVG()), in: ctx)
                 }
-                ElementDrawing.draw(page.elements, package: package, in: ctx)
+                ElementDrawing.draw(page.elements, package: package, in: ctx, kind: .text)
             }
         }
     }
