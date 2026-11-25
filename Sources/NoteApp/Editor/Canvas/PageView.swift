@@ -10,7 +10,8 @@ private struct TileKey: Hashable {
 
 private final class Tile {
     let layer: CALayer
-    /// Cached paper/PDF background (PDF pages only; templates are cheap to redraw).
+    /// Cached underlay: PDF page and/or photos under the ink (plain paper is cheap to redraw).
+    /// Pen-up re-renders tiles on the main thread, so this must not be redrawn every stroke.
     var background: CGImage?
     var valid = false
     /// Bumped whenever the tile's content becomes outdated; a worker result is used only
@@ -320,7 +321,7 @@ final class PageView: UIView {
             if self.tiles[key] === tile, tile.epoch == epoch, self.renderScale == scale, let image = result.image {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
-                if self.pdfPage != nil { tile.background = result.background }
+                tile.background = result.background
                 tile.layer.contents = image
                 tile.layer.frame = self.layerFrame(px)
                 tile.valid = true
@@ -352,13 +353,10 @@ final class PageView: UIView {
         tile.epoch += 1   // a worker result started before this change is outdated
         if let background = tile.background {
             ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h))
-        } else {
-            PageImageRenderer.drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: w, pixelHeight: h,
-                                             origin: px.origin, scale: renderScale)
-            if pdfPage != nil { tile.background = ctx.makeImage() }
+        } else if PageImageRenderer.drawUnderlay(page: page, pdfPage: pdfPage, package: package, lifted: liftedElement,
+                                                 in: ctx, pixelRect: px, scale: renderScale) {
+            tile.background = ctx.makeImage()
         }
-        ElementDrawing.drawImages(page.elements, package: package, in: ctx, pixelHeight: h, origin: px.origin,
-                                  scale: renderScale, skip: liftedElement)
         if let data = ctx.data {
             ink.renderOver(data, width: w, height: h, bytesPerRow: ctx.bytesPerRow, scale: Float(renderScale),
                            offsetX: Float(-px.minX), offsetY: Float(-px.minY))
@@ -369,7 +367,8 @@ final class PageView: UIView {
     }
 
     /// Ink changed in `pageRect`: re-render visible tiles there now, the rest later.
-    func invalidate(_ pageRect: CGRect) {
+    /// `underlay`: images under the ink changed there too, so cached underlays are redrawn.
+    func invalidate(_ pageRect: CGRect, underlay: Bool = false) {
         guard !pageRect.isNull else { return }
         previewValid = false
         previewEpoch += 1
@@ -378,7 +377,12 @@ final class PageView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for key in affected {
-            guard tiles[key] != nil else { continue }
+            guard let tile = tiles[key] else { continue }
+            if underlay {
+                tile.background = nil
+                // A worker may be drawing the old underlay for this tile: bump it out.
+                tile.epoch += 1
+            }
             renderTile(key)
             pending.remove(key)
         }
@@ -574,7 +578,7 @@ final class PageView: UIView {
                 ? oldImages + newImages
                 : oldImages.filter { !newImages.contains($0) } + newImages.filter { !oldImages.contains($0) }
             for e in changed { dirty = dirty.union(Self.rect(e)) }
-            invalidate(dirty)
+            invalidate(dirty, underlay: true)
         }
         syncElements(newPage.elements)
     }
@@ -586,7 +590,7 @@ final class PageView: UIView {
     /// An image's view starts or stops following the finger: take it out of the tiles meanwhile.
     private func setLifted(_ element: PageElement?, original: PageElement) {
         liftedElement = element?.id
-        invalidate(Self.rect(original))
+        invalidate(Self.rect(original), underlay: true)
     }
 
     func syncElements(_ elements: [PageElement]) {

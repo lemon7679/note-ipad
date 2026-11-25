@@ -196,7 +196,7 @@ final class TileRenderQueue {
     }
 }
 
-/// A tile (or preview) image rendered on a worker, with the PDF background it drew.
+/// A tile (or preview) image rendered on a worker, with the underlay (PDF page / photos) it drew.
 struct TileImage: @unchecked Sendable {
     var image: CGImage?
     var background: CGImage?
@@ -221,7 +221,25 @@ enum PageImageRenderer {
         ctx.restoreGState()
     }
 
-    /// One tile on a worker thread: background (cached PDF image, or drawn now) + images + ink snapshot.
+    /// Everything under the ink in one tile: paper or PDF page, then images (except `lifted`).
+    /// Returns whether that is worth caching (PDF pages and photos are slow to redraw; plain
+    /// paper is cheap).
+    @discardableResult
+    static func drawUnderlay(page: NotebookPage, pdfPage: CGPDFPage?, package: NotebookPackage?, lifted: UUID?,
+                             in ctx: CGContext, pixelRect px: CGRect, scale: CGFloat) -> Bool {
+        let w = Int(px.width), h = Int(px.height)
+        drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: w, pixelHeight: h, origin: px.origin,
+                       scale: scale)
+        let region = CGRect(x: px.minX / scale, y: px.minY / scale, width: px.width / scale, height: px.height / scale)
+        let images = page.elements.filter {
+            $0.kind == .image && $0.id != lifted
+                && region.intersects(CGRect(x: $0.frame.x, y: $0.frame.y, width: $0.frame.width, height: $0.frame.height))
+        }
+        ElementDrawing.drawImages(images, package: package, in: ctx, pixelHeight: h, origin: px.origin, scale: scale)
+        return pdfPage != nil || !images.isEmpty
+    }
+
+    /// One tile on a worker thread: underlay (cached, or drawn now) + ink snapshot.
     /// `lifted` is an image being dragged, left out so it is not drawn twice.
     static func tile(page: NotebookPage, pdfPage: CGPDFPage?, background: CGImage?, snapshot: InkSnapshot,
                      package: NotebookPackage?, lifted: UUID? = nil, pixelRect px: CGRect, scale: CGFloat) -> TileImage {
@@ -230,13 +248,10 @@ enum PageImageRenderer {
         var drawnBackground: CGImage?
         if let background {
             ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h))
-        } else {
-            drawBackground(page: page, pdfPage: pdfPage, in: ctx, pixelWidth: w, pixelHeight: h, origin: px.origin,
-                           scale: scale)
-            if pdfPage != nil { drawnBackground = ctx.makeImage() }
+        } else if drawUnderlay(page: page, pdfPage: pdfPage, package: package, lifted: lifted, in: ctx,
+                               pixelRect: px, scale: scale) {
+            drawnBackground = ctx.makeImage()
         }
-        ElementDrawing.drawImages(page.elements, package: package, in: ctx, pixelHeight: h, origin: px.origin,
-                                  scale: scale, skip: lifted)
         if let data = ctx.data {
             snapshot.renderOver(data, width: w, height: h, bytesPerRow: ctx.bytesPerRow, scale: Float(scale),
                                 offsetX: Float(-px.minX), offsetY: Float(-px.minY))
@@ -305,7 +320,14 @@ enum ElementDrawing {
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: 2048,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        guard let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        // Convert once to the tiles' own format (sRGB, premultiplied RGBA): photos are often
+        // Display P3 / 16-bit, and drawing those would colour-convert on every tile render.
+        var image = decoded
+        if let ctx = Bitmaps.context(width: decoded.width, height: decoded.height) {
+            ctx.draw(decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
+            if let converted = ctx.makeImage() { image = converted }
+        }
         images.setObject(image, forKey: path as NSString, cost: image.bytesPerRow * image.height)
         return image
     }
