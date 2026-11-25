@@ -12,10 +12,10 @@ struct NoteMainApp: App {
                 .environmentObject(app)
                 .tint(NoteTheme.accent)
                 .onOpenURL { url in
-                    // "Note에서 열기" from Files, Mail, Safari…: PDFs are saved on this iPad and open as PDFs.
+                    // "Note에서 열기" from Files, Mail, Safari…: PDFs become notebooks on this iPad.
                     guard url.isFileURL else { return }
                     if url.pathExtension.lowercased() == "pdf" {
-                        app.openIncomingPDF(url, into: LibraryLocation(source: .local, folder: "/"))
+                        app.importPDF(from: url, into: LibraryLocation(source: .local, folder: "/"), annotate: true)
                     } else if url.pathExtension.lowercased() == FileNaming.notebookExtension {
                         let scoped = url.startAccessingSecurityScopedResource()
                         defer { if scoped { url.stopAccessingSecurityScopedResource() } }

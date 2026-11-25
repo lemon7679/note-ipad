@@ -251,34 +251,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// "Note에서 열기" from Files, Mail, Safari…: the PDF is saved into `location` as a PDF file
-    /// (not turned into a notebook) and opened in the PDF reader. A PDF that already lives in
-    /// "이 iPad" (opened in place from the Files app) is opened as is, without a copy.
-    func openIncomingPDF(_ url: URL, into location: LibraryLocation) {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let lib = library(location.source)
-        let rootPath = lib.root.standardizedFileURL.resolvingSymlinksInPath().path
-        let filePath = url.standardizedFileURL.resolvingSymlinksInPath().path
-        if filePath.hasPrefix(rootPath + "/") {
-            let ref = LibraryRef(source: location.source, path: "/" + String(filePath.dropFirst(rootPath.count + 1)))
-            openDocument = OpenDocument(ref: ref, url: lib.url(for: ref.path), kind: .pdf)
-            noteRecent(ref)
-            return
-        }
-        do {
-            guard !PDFSupport.pageSizes(of: url).isEmpty else { throw CocoaError(.fileReadCorruptFile) }
-            let path = try lib.importFile(from: url, into: location.folder)
-            let ref = LibraryRef(source: location.source, path: path)
-            refreshLibrary()
-            localChange(in: location.source)
-            openDocument = OpenDocument(ref: ref, url: lib.url(for: path), kind: .pdf)
-            noteRecent(ref)
-        } catch {
-            errorMessage = "PDF를 열지 못했습니다. \(error.localizedDescription)"
-        }
-    }
-
     /// "필기 시작" on a PDF in the library: reuses the notebook linked to it, or
     /// creates "<PDF> 필기.inknote" beside it (the original PDF stays untouched on the NAS).
     func annotate(pdf ref: LibraryRef) {
