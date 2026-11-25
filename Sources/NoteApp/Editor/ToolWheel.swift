@@ -3,86 +3,61 @@ import InkBridge
 import NoteKit
 import SwiftUI
 
-/// Tool menu opened by the Apple Pencil button (double tap / squeeze), docked in the top-left
-/// corner of the page area as a quarter circle so it covers little of the page.
-///
-/// Three arcs, each dragged along its curve to show more options:
-///  - outer: tools, undo/redo and pen settings;
-///  - middle: all colors of the current pen (or highlighter), including recent custom colors;
-///  - inner: width presets and, for the pen, the pen kinds.
-/// The corner button (current tool) closes it, as does tapping outside.
+/// Tool palette opened by the Apple Pencil button (double tap / squeeze), shown around the pencil tip
+/// (GoodNotes-style palette):
+///  - a curved band wrapping the upper left of the tip with the tools, and undo at its lower end;
+///  - at the band's top end, the width presets and the current color (tap the color for all colors);
+///  - a small column to the left: pen settings, pen kinds and redo.
+/// Tapping outside closes it, as does picking a tool or a color.
 struct ToolWheel: View {
     @ObservedObject var model: EditorModel
     var onPenSettings: () -> Void
 
-    /// Name of the option the pencil is hovering over, shown next to the wheel.
+    /// Name of the option the pencil is hovering over, shown under the palette.
     @State private var hoverLabel: String?
-    /// Scroll angle (degrees) of each arc: tools, colors, options.
-    @State private var scroll: [CGFloat]?
-    @State private var dragArc: Int?
-    @State private var dragAngle: CGFloat = 0
-    /// While dragging (and just after) item taps are ignored so a drag never picks an option.
-    @State private var dragging = false
-    @State private var dragEnded = Date.distantPast
+    /// The pop-out under the width/color bar: all colors or the pen kinds.
+    @State private var panel: Panel?
+    @State private var appeared = false
 
-    /// Radius of the quarter disk.
-    static let radius: CGFloat = 268
+    private enum Panel { case colors, kinds }
 
-    /// One arc of options around the corner. Angles are degrees from the top edge (0°) to the left edge (90°).
-    fileprivate struct Arc {
-        let radius: CGFloat
-        let step: CGFloat
-        let itemSize: CGFloat
+    /// Geometry around the anchor (the pencil tip), in points.
+    /// Angles are degrees on screen: 0 = right, 90 = down, 180 = left, 270 = up.
+    fileprivate enum Layout {
+        static let radius: CGFloat = 140
+        static let band: CGFloat = 56
+        static let item: CGFloat = 42
+        static let bandStart: CGFloat = 160
+        static let bandEnd: CGFloat = 297
+        static let undoAngle: CGFloat = 173
+        static let dividerAngle: CGFloat = 183.5
+        static let firstTool: CGFloat = 194
+        static let toolStep: CGFloat = 18.5
 
-        /// Angle of the first item when not scrolled.
-        var start: CGFloat { step * 0.6 }
+        /// Width/color bar attached to the band's top end.
+        static let barHeight: CGFloat = 48
+        static let barSlot: CGFloat = 36
+        static let barLead: CGFloat = 30
+        static let barWidth: CGFloat = barLead + 4 * barSlot + 1 + 4 * 4 + 8
+        /// Left column (pen settings, pen kinds, redo).
+        static let columnWidth: CGFloat = 48
+        static let columnHeight: CGFloat = 3 * 40 + 2 * 4 + 8
+        static let columnCenter = CGPoint(x: -200, y: -62)
+        static let panelWidth: CGFloat = 236
 
-        /// Largest scroll angle: the last item sits as far from the left edge as the first from the top.
-        func maxScroll(_ count: Int) -> CGFloat { max(0, CGFloat(count - 1) * step + 2 * start - 90) }
+        /// Extent of everything around the anchor, for keeping the palette on screen.
+        static let minX: CGFloat = -230, maxX: CGFloat = 282, minY: CGFloat = -172, maxY: CGFloat = 110
 
-        func angle(_ index: Int, scroll: CGFloat) -> CGFloat { start + CGFloat(index) * step - scroll }
-    }
-
-    private static let toolsArc = Arc(radius: 222, step: 17, itemSize: 46)
-    private static let colorsArc = Arc(radius: 158, step: 18, itemSize: 36)
-    private static let optionsArc = Arc(radius: 98, step: 27, itemSize: 40)
-    private static let arcs = [toolsArc, colorsArc, optionsArc]
-
-    /// Which arc a touch at `distance` from the corner belongs to (nil = the corner button).
-    private static func arc(at distance: CGFloat) -> Int? {
-        if distance >= (toolsArc.radius + colorsArc.radius) / 2 { return 0 }
-        if distance >= (colorsArc.radius + optionsArc.radius) / 2 { return 1 }
-        if distance >= 56 { return 2 }
-        return nil
-    }
-
-    private enum Item: Hashable {
-        case tool(EditorTool)
-        case undo, redo, settings
-
-        var symbol: String {
-            switch self {
-            case .tool(let t): return t.symbol
-            case .undo: return "arrow.uturn.backward"
-            case .redo: return "arrow.uturn.forward"
-            case .settings: return "slider.horizontal.3"
-            }
+        static func point(_ angle: CGFloat, _ r: CGFloat = radius) -> CGPoint {
+            let rad = angle * .pi / 180
+            return CGPoint(x: r * cos(rad), y: r * sin(rad))
         }
 
-        var label: String {
-            switch self {
-            case .tool(let t): return t.label
-            case .undo: return "실행 취소"
-            case .redo: return "다시 실행"
-            case .settings: return "펜 설정"
-            }
-        }
+        /// The band's top end, where the bar starts.
+        static var barStart: CGPoint { point(bandEnd) }
     }
 
-    private static let items: [Item] = [
-        .tool(.pen), .tool(.highlighter), .tool(.eraser), .tool(.lasso), .tool(.text), .tool(.laser),
-        .undo, .redo, .settings,
-    ]
+    private static let tools: [EditorTool] = [.pen, .highlighter, .eraser, .lasso, .text, .laser]
 
     /// The ink tool the colors and widths apply to.
     private var inkTarget: EditorTool {
@@ -103,173 +78,263 @@ struct ToolWheel: View {
     private var widthIndex: Int {
         min(max(highlighter ? model.tools.highlighterWidthIndex : model.tools.penWidthIndex, 0), widths.count - 1)
     }
-    private var kinds: [BrushKind] { highlighter ? [] : BrushKind.pens }
-    private var counts: [Int] { [Self.items.count, palette.count, widths.count + kinds.count] }
 
     var body: some View {
+        GeometryReader { geo in
+            let a = anchor(in: geo.size)
+            ZStack(alignment: .topLeading) {
+                // Tap anywhere outside the palette to close it (and swallow the touch so it doesn't draw).
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                paletteView(at: a)
+                    .scaleEffect(appeared ? 1 : 0.6,
+                                 anchor: UnitPoint(x: a.x / max(geo.size.width, 1), y: a.y / max(geo.size.height, 1)))
+                    .opacity(appeared ? 1 : 0)
+                if let hoverLabel {
+                    Text(hoverLabel)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background(Color.black.opacity(0.75), in: Capsule())
+                        .fixedSize()
+                        .allowsHitTesting(false)
+                        .position(x: a.x - 60, y: min(a.y + 96, geo.size.height - 18))
+                }
+            }
+        }
+        .onAppear { withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { appeared = true } }
+    }
+
+    /// Where the pencil was, moved just enough to keep the whole palette on screen.
+    private func anchor(in size: CGSize) -> CGPoint {
+        let p = model.toolWheel ?? CGPoint(x: size.width / 2, y: size.height / 2)
+        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { lo > hi ? (lo + hi) / 2 : min(max(v, lo), hi) }
+        let m: CGFloat = 8
+        return CGPoint(x: clamp(p.x, -Layout.minX + m, size.width - Layout.maxX - m),
+                       y: clamp(p.y, -Layout.minY + m, size.height - Layout.maxY - m))
+    }
+
+    private func paletteView(at a: CGPoint) -> some View {
         ZStack(alignment: .topLeading) {
-            // Tap anywhere outside the wheel to close it (and swallow the touch so it doesn't draw).
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture { close() }
-            wheel
-                .transition(.scale(scale: 0.4, anchor: .topLeading).combined(with: .opacity))
-            if let hoverLabel {
-                Text(hoverLabel)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(Color.black.opacity(0.75), in: Capsule())
-                    .allowsHitTesting(false)
-                    .offset(x: Self.radius + 10, y: 10)
+            backgrounds(at: a)
+            bandItems(at: a)
+            bar(at: a)
+            column(at: a)
+            if let panel {
+                panelView(panel)
+                    .offset(x: a.x + Layout.barStart.x - 22,
+                            y: a.y + Layout.barStart.y + Layout.barHeight / 2 + 8)
+                    .transition(.scale(scale: 0.9, anchor: .topLeading).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear { if scroll == nil { scroll = initialScroll() } }
+        .animation(.easeOut(duration: 0.15), value: panel)
     }
 
-    private var wheel: some View {
-        let s = scroll ?? [0, 0, 0]
+    /// Band, bar and column surfaces, drawn as one group so their shadow is shared.
+    private func backgrounds(at a: CGPoint) -> some View {
+        let bar = Layout.barStart
         return ZStack(alignment: .topLeading) {
-            QuarterDisk()
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
-                // Taps on the wheel's own background must not close it.
-                .contentShape(QuarterDisk())
-                .onTapGesture {}
-            // Tracks behind each arc.
-            ForEach(0..<Self.arcs.count, id: \.self) { i in
-                let arc = Self.arcs[i]
-                Circle()
-                    .stroke(NoteTheme.fieldFill.opacity(0.55), lineWidth: arc.itemSize + 12)
-                    .frame(width: arc.radius * 2, height: arc.radius * 2)
-                    .position(x: 0, y: 0)
-                    .allowsHitTesting(false)
-            }
-            ForEach(Array(Self.items.enumerated()), id: \.element) { index, item in
-                slot(Self.toolsArc, index, scroll: s[0]) { itemButton(item) }
-            }
-            ForEach(Array(palette.enumerated()), id: \.element) { index, hex in
-                slot(Self.colorsArc, index, scroll: s[1]) { colorButton(hex) }
-            }
-            ForEach(Array(widths.enumerated()), id: \.offset) { index, width in
-                slot(Self.optionsArc, index, scroll: s[2]) { widthButton(index, width) }
-            }
-            ForEach(Array(kinds.enumerated()), id: \.element) { index, kind in
-                slot(Self.optionsArc, widths.count + index, scroll: s[2]) { kindButton(kind) }
-            }
-            cornerButton
-                .position(x: 6 + 22, y: 6 + 22)
+            ArcBand(center: a, radius: Layout.radius, start: Layout.bandStart, end: Layout.bandEnd)
+                .stroke(NoteTheme.surface, style: StrokeStyle(lineWidth: Layout.band, lineCap: .round))
+            Capsule()
+                .fill(NoteTheme.surface)
+                .frame(width: Layout.barWidth, height: Layout.barHeight)
+                .position(x: a.x + bar.x - 22 + Layout.barWidth / 2, y: a.y + bar.y)
+            Capsule()
+                .fill(NoteTheme.surface)
+                .frame(width: Layout.columnWidth, height: Layout.columnHeight)
+                .position(x: a.x + Layout.columnCenter.x, y: a.y + Layout.columnCenter.y)
         }
-        .frame(width: Self.radius, height: Self.radius)
-        .clipShape(QuarterDisk())
-        .contentShape(QuarterDisk())
-        .coordinateSpace(name: "toolWheel")
-        .simultaneousGesture(arcDrag)
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
+        // Taps on the palette's own surfaces must not close it.
+        .contentShape(PaletteShape(anchor: a))
+        .onTapGesture {}
     }
 
-    /// Dragging along an arc scrolls that arc.
-    private var arcDrag: some Gesture {
-        DragGesture(minimumDistance: 6, coordinateSpace: .named("toolWheel"))
-            .onChanged { value in
-                if !dragging {
-                    dragging = true
-                    let p = value.startLocation
-                    dragArc = Self.arc(at: hypot(p.x, p.y))
-                    dragAngle = Self.angle(of: p)
-                }
-                let a = Self.angle(of: value.location)
-                if let i = dragArc, var s = scroll {
-                    s[i] = min(max(s[i] - (a - dragAngle), 0), Self.arcs[i].maxScroll(counts[i]))
-                    scroll = s
-                }
-                dragAngle = a
+    // MARK: Band
+
+    private func bandItems(at a: CGPoint) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(Self.tools.enumerated()), id: \.element) { index, tool in
+                let p = Layout.point(Layout.firstTool + CGFloat(index) * Layout.toolStep)
+                toolButton(tool).position(x: a.x + p.x, y: a.y + p.y)
             }
-            .onEnded { _ in
-                dragging = false
-                dragArc = nil
-                dragEnded = Date()
-            }
-    }
-
-    private static func angle(of p: CGPoint) -> CGFloat { atan2(p.y, p.x) * 180 / .pi }
-
-    /// Start with the current tool, color and pen kind in view.
-    private func initialScroll() -> [CGFloat] {
-        func initial(_ arc: Arc, _ index: Int, _ count: Int) -> CGFloat {
-            min(max(arc.angle(index, scroll: 0) - 60, 0), arc.maxScroll(count))
-        }
-        let toolIndex = Self.items.firstIndex(of: .tool(model.tools.tool)) ?? 0
-        let colorIndex = palette.firstIndex { $0.uppercased() == activeColor.uppercased() } ?? 0
-        let kindIndex = widths.count + (kinds.firstIndex(of: model.tools.penKind) ?? 0)
-        return [
-            initial(Self.toolsArc, toolIndex, counts[0]),
-            initial(Self.colorsArc, colorIndex, counts[1]),
-            kinds.isEmpty ? 0 : initial(Self.optionsArc, kindIndex, counts[2]),
-        ]
-    }
-
-    /// Places `content` at position `index` on `arc`. Items fade out near the top and left edges
-    /// and are left out once fully outside.
-    @ViewBuilder
-    private func slot<Content: View>(_ arc: Arc, _ index: Int, scroll: CGFloat,
-                                     @ViewBuilder content: () -> Content) -> some View {
-        let angle = arc.angle(index, scroll: scroll)
-        let alpha = min(max(min(angle + 2, 92 - angle) / 9, 0), 1)
-        if alpha > 0.05 {
-            let rad = angle * .pi / 180
-            content()
-                .opacity(alpha)
-                .position(x: arc.radius * cos(rad), y: arc.radius * sin(rad))
+            let d = Layout.point(Layout.dividerAngle)
+            Capsule()
+                .fill(NoteTheme.controlBorder)
+                .frame(width: 22, height: 1.5)
+                .rotationEffect(.degrees(Double(Layout.dividerAngle)))
+                .position(x: a.x + d.x, y: a.y + d.y)
+                .allowsHitTesting(false)
+            let u = Layout.point(Layout.undoAngle)
+            iconButton("arrow.uturn.backward", label: "실행 취소", enabled: model.canUndo) { model.undo() }
+                .position(x: a.x + u.x, y: a.y + u.y)
         }
     }
 
-    /// Item taps are ignored while an arc is being dragged.
-    private var tapAllowed: Bool { !dragging && Date().timeIntervalSince(dragEnded) > 0.15 }
-
-    /// Hover callback that shows `label` while hovering and clears it on exit.
-    private func hovering(_ label: String) -> (Bool) -> Void {
-        { on in
-            if on { hoverLabel = label } else if hoverLabel == label { hoverLabel = nil }
-        }
-    }
-
-    private func isEnabled(_ item: Item) -> Bool {
-        switch item {
-        case .undo: return model.canUndo
-        case .redo: return model.canRedo
-        default: return true
-        }
-    }
-
-    private func itemButton(_ item: Item) -> some View {
-        let on: Bool = { if case .tool(let t) = item { return model.tools.tool == t }; return false }()
-        let size = Self.toolsArc.itemSize
+    private func toolButton(_ tool: EditorTool) -> some View {
+        let on = model.tools.tool == tool
         return Button {
-            guard tapAllowed else { return }
-            perform(item)
+            model.tools.select(tool)
+            close()
         } label: {
-            Image(systemName: item.symbol)
-                .font(.system(size: 19, weight: .medium))
+            Image(systemName: tool.symbol)
+                .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(on ? Color.white : NoteTheme.textPrimary)
-                .frame(width: size, height: size)
-                .background(Circle().fill(on ? NoteTheme.accent : NoteTheme.surface))
-                .overlay(Circle().stroke(on ? Color.clear : NoteTheme.controlBorder))
+                .frame(width: Layout.item, height: Layout.item)
+                .background(Circle().fill(on ? NoteTheme.accent : Color.clear))
+                .overlay(alignment: .bottomTrailing) {
+                    if tool.inks {
+                        // Small dot with the tool's current color.
+                        Circle()
+                            .fill(Color(hex: tool == .highlighter ? model.tools.highlighterColor : model.tools.penColor))
+                            .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
+                            .frame(width: 11, height: 11)
+                            .offset(x: -2, y: -2)
+                    }
+                }
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled(item))
-        .opacity(isEnabled(item) ? 1 : 0.35)
-        .hoverHighlight(scale: 1.14, isEnabled: isEnabled(item), onHover: hovering(item.label))
-        .accessibilityLabel(item.label)
+        .hoverHighlight(scale: 1.14, onHover: hovering(tool.label))
+        .accessibilityLabel(tool.label)
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    private func colorButton(_ hex: String) -> some View {
-        let selected = activeColor.uppercased() == hex.uppercased()
-        let size = Self.colorsArc.itemSize
+    private func iconButton(_ symbol: String, label: String, enabled: Bool = true, selected: Bool = false,
+                            size: CGFloat = Layout.item, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(selected ? NoteTheme.accent : NoteTheme.textPrimary)
+                .frame(width: size, height: size)
+                .background(Circle().fill(selected ? NoteTheme.accentSoft : Color.clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
+        .hoverHighlight(scale: 1.12, isEnabled: enabled, onHover: hovering(label))
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    // MARK: Width / color bar
+
+    private func bar(at a: CGPoint) -> some View {
+        let start = Layout.barStart
+        return HStack(spacing: 4) {
+            ForEach(Array(widths.enumerated()), id: \.offset) { index, width in
+                widthButton(index, width)
+            }
+            Rectangle()
+                .fill(NoteTheme.controlBorder)
+                .frame(width: 1, height: 24)
+            colorDot
+        }
+        .padding(.leading, Layout.barLead)
+        .padding(.trailing, 8)
+        .frame(width: Layout.barWidth, height: Layout.barHeight, alignment: .leading)
+        .position(x: a.x + start.x - 22 + Layout.barWidth / 2, y: a.y + start.y)
+    }
+
+    private func widthButton(_ index: Int, _ width: Double) -> some View {
+        let on = index == widthIndex
+        let maxWidth = widths.max() ?? 1
+        let label = highlighter ? String(format: "%.0fpt", width) : String(format: "%.1fmm", width / 72 * 25.4)
         return Button {
-            guard tapAllowed else { return }
+            if model.tools.tool != inkTarget { model.tools.select(inkTarget) }
+            if highlighter { model.tools.highlighterWidthIndex = index } else { model.tools.penWidthIndex = index }
+        } label: {
+            Capsule()
+                .fill(Color(hex: activeColor))
+                .overlay(Capsule().stroke(NoteTheme.controlBorder.opacity(activeColor.uppercased() == "#FFFFFF" ? 1 : 0)))
+                .frame(width: 18, height: max(2, CGFloat(width / maxWidth) * 8))
+                .rotationEffect(.degrees(-35))
+                .frame(width: Layout.barSlot, height: Layout.barSlot)
+                .background(Circle().fill(on ? NoteTheme.accentSoft : Color.clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(scale: 1.12, onHover: hovering("굵기 \(label)"))
+        .accessibilityLabel("굵기 \(label)")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    /// The current color; tap to show all colors.
+    private var colorDot: some View {
+        let open = panel == .colors
+        return Button {
+            panel = open ? nil : .colors
+        } label: {
+            Circle()
+                .fill(Color(hex: activeColor))
+                .overlay(Circle().stroke(NoteTheme.controlBorder.opacity(activeColor.uppercased() == "#FFFFFF" ? 1 : 0)))
+                .frame(width: 24, height: 24)
+                .padding(4)
+                .overlay(Circle().stroke(open ? NoteTheme.accent : NoteTheme.controlBorder, lineWidth: open ? 2 : 1))
+                .frame(width: Layout.barSlot, height: Layout.barSlot)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(scale: 1.12, onHover: hovering(highlighter ? "형광펜 색" : "펜 색"))
+        .accessibilityLabel(highlighter ? "형광펜 색" : "펜 색")
+    }
+
+    // MARK: Left column
+
+    private func column(at a: CGPoint) -> some View {
+        VStack(spacing: 4) {
+            iconButton("slider.horizontal.3", label: "펜 설정", size: 40) {
+                let t = model.tools.tool
+                if !(t.inks || t == .eraser) { model.tools.select(model.tools.lastInkTool) }
+                close()
+                onPenSettings()
+            }
+            iconButton("scribble.variable", label: "펜 종류", enabled: !highlighter,
+                       selected: panel == .kinds, size: 40) {
+                panel = panel == .kinds ? nil : .kinds
+            }
+            iconButton("arrow.uturn.forward", label: "다시 실행", enabled: model.canRedo, size: 40) { model.redo() }
+        }
+        .frame(width: Layout.columnWidth, height: Layout.columnHeight)
+        .position(x: a.x + Layout.columnCenter.x, y: a.y + Layout.columnCenter.y)
+    }
+
+    // MARK: Pop-out panel
+
+    @ViewBuilder
+    private func panelView(_ panel: Panel) -> some View {
+        Group {
+            switch panel {
+            case .colors: colorsGrid
+            case .kinds: kindsGrid
+            }
+        }
+        .padding(7)
+        .frame(width: Layout.panelWidth, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(NoteTheme.surface))
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .onTapGesture {}
+    }
+
+    private var colorsGrid: some View {
+        let columns = Array(repeating: GridItem(.fixed(32), spacing: 6), count: 6)
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(palette, id: \.self) { hex in
+                colorSwatch(hex)
+            }
+        }
+    }
+
+    private func colorSwatch(_ hex: String) -> some View {
+        let selected = activeColor.uppercased() == hex.uppercased()
+        return Button {
             if model.tools.tool != inkTarget { model.tools.select(inkTarget) }
             model.tools.setColor(hex)
             close()
@@ -277,7 +342,7 @@ struct ToolWheel: View {
             Circle().fill(Color(hex: hex))
                 .overlay(Circle().stroke(NoteTheme.controlBorder.opacity(hex.uppercased() == "#FFFFFF" ? 1 : 0)))
                 .padding(4)
-                .frame(width: size, height: size)
+                .frame(width: 32, height: 32)
                 .overlay(Circle().stroke(selected ? NoteTheme.accent : Color.clear, lineWidth: 2))
                 .contentShape(Circle())
         }
@@ -287,87 +352,43 @@ struct ToolWheel: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func widthButton(_ index: Int, _ width: Double) -> some View {
-        let on = index == widthIndex
-        let maxWidth = widths.max() ?? 1
-        let label = highlighter ? String(format: "%.0fpt", width) : String(format: "%.1fmm", width / 72 * 25.4)
-        let size = Self.optionsArc.itemSize
-        return Button {
-            guard tapAllowed else { return }
-            if model.tools.tool != inkTarget { model.tools.select(inkTarget) }
-            if highlighter { model.tools.highlighterWidthIndex = index } else { model.tools.penWidthIndex = index }
-        } label: {
-            VStack(spacing: 2) {
-                Capsule()
-                    .fill(Color(hex: activeColor))
-                    .frame(width: 20, height: max(2, width / maxWidth * 8))
-                Text(label)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(NoteTheme.textSecondary)
-                    .lineLimit(1)
+    private var kindsGrid: some View {
+        let columns = Array(repeating: GridItem(.fixed(70), spacing: 6), count: 3)
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(BrushKind.pens, id: \.self) { kind in
+                kindButton(kind)
             }
-            .frame(width: size, height: size)
-            .background(Circle().fill(on ? NoteTheme.accentSoft : NoteTheme.surface))
-            .overlay(Circle().stroke(on ? NoteTheme.accent : NoteTheme.controlBorder))
         }
-        .buttonStyle(.plain)
-        .hoverHighlight(scale: 1.12, onHover: hovering("굵기 \(label)"))
-        .accessibilityLabel("굵기 \(label)")
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     private func kindButton(_ kind: BrushKind) -> some View {
         let on = model.tools.penKind == kind
-        let size = Self.optionsArc.itemSize
         return Button {
-            guard tapAllowed else { return }
-            if model.tools.tool != inkTarget { model.tools.select(inkTarget) }
+            if model.tools.tool != .pen { model.tools.select(.pen) }
             model.tools.penKind = kind
+            panel = nil
         } label: {
-            Text(kind == .calligraphy ? "캘리" : kind.label)
-                .font(.system(size: 11, weight: on ? .semibold : .regular))
+            Text(kind.label)
+                .font(.system(size: 12, weight: on ? .semibold : .regular))
                 .foregroundStyle(on ? Color.white : NoteTheme.textPrimary)
                 .lineLimit(1)
-                .frame(width: size, height: size)
-                .background(Circle().fill(on ? NoteTheme.accent : NoteTheme.surface))
-                .overlay(Circle().stroke(on ? Color.clear : NoteTheme.controlBorder))
+                .minimumScaleFactor(0.8)
+                .frame(width: 70, height: 34)
+                .background(Capsule().fill(on ? NoteTheme.accent : NoteTheme.fieldFill))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .hoverHighlight(scale: 1.12, onHover: hovering(kind.label))
+        .hoverHighlight(Capsule(), scale: 1.06, onHover: hovering(kind.label))
         .accessibilityLabel(kind.label)
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    /// Corner: the current tool; tap to close.
-    private var cornerButton: some View {
-        Button {
-            close()
-        } label: {
-            Image(systemName: model.tools.tool.symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(NoteTheme.accent))
-        }
-        .buttonStyle(.plain)
-        .hoverHighlight(scale: 1.1, onHover: hovering("닫기"))
-        .accessibilityLabel("도구 휠 닫기")
-    }
+    // MARK: Helpers
 
-    private func perform(_ item: Item) {
-        switch item {
-        case .tool(let t):
-            model.tools.select(t)
-            close()
-        case .undo:
-            model.undo()
-        case .redo:
-            model.redo()
-        case .settings:
-            let t = model.tools.tool
-            if !(t.inks || t == .eraser) { model.tools.select(model.tools.lastInkTool) }
-            close()
-            onPenSettings()
+    /// Hover callback that shows `label` while hovering and clears it on exit.
+    private func hovering(_ label: String) -> (Bool) -> Void {
+        { on in
+            if on { hoverLabel = label } else if hoverLabel == label { hoverLabel = nil }
         }
     }
 
@@ -376,15 +397,38 @@ struct ToolWheel: View {
     }
 }
 
-/// Quarter of a circle centered on the top-left corner of its frame.
-private struct QuarterDisk: Shape {
+/// Arc around `center` from `start` to `end` degrees (screen angles), for stroking as a band.
+private struct ArcBand: Shape {
+    let center: CGPoint
+    let radius: CGFloat
+    let start: CGFloat
+    let end: CGFloat
+
     func path(in rect: CGRect) -> Path {
-        let r = min(rect.width, rect.height)
         var p = Path()
-        p.move(to: rect.origin)
-        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
-        p.addArc(center: rect.origin, radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
-        p.closeSubpath()
+        p.addArc(center: center, radius: radius, startAngle: .degrees(Double(start)),
+                 endAngle: .degrees(Double(end)), clockwise: false)
+        return p
+    }
+}
+
+/// Hit area of the palette's surfaces (band, bar and column) around `anchor`.
+private struct PaletteShape: Shape {
+    let anchor: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        typealias L = ToolWheel.Layout
+        var p = ArcBand(center: anchor, radius: L.radius, start: L.bandStart, end: L.bandEnd)
+            .path(in: rect)
+            .strokedPath(StrokeStyle(lineWidth: L.band, lineCap: .round))
+        let bar = L.barStart
+        p.addRoundedRect(in: CGRect(x: anchor.x + bar.x - 22, y: anchor.y + bar.y - L.barHeight / 2,
+                                    width: L.barWidth, height: L.barHeight),
+                         cornerSize: CGSize(width: L.barHeight / 2, height: L.barHeight / 2))
+        p.addRoundedRect(in: CGRect(x: anchor.x + L.columnCenter.x - L.columnWidth / 2,
+                                    y: anchor.y + L.columnCenter.y - L.columnHeight / 2,
+                                    width: L.columnWidth, height: L.columnHeight),
+                         cornerSize: CGSize(width: L.columnWidth / 2, height: L.columnWidth / 2))
         return p
     }
 }

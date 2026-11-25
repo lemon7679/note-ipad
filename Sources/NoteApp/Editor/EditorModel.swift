@@ -47,8 +47,7 @@ final class EditorModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published var showsSidebar = true
-    /// Pencil-button tool wheel is open (non-nil; it is docked in the canvas's top-left corner).
-    /// The point is where the pencil was when it opened.
+    /// Pencil-button tool palette is open around this point (canvas coordinates: where the pencil was).
     @Published var toolWheel: CGPoint?
     @Published private(set) var thumbnailRevision = 0
     @Published var searchResults: [SearchHit] = []
