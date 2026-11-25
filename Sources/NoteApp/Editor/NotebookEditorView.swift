@@ -288,6 +288,7 @@ struct NotebookEditorView: View {
                     .overlay(RoundedRectangle(cornerRadius: NoteTheme.Radius.control).stroke(NoteTheme.controlBorder))
                 }
                 .buttonStyle(.plain)
+                .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), scale: 1.03)
                 .popover(isPresented: $showPenSettings) {
                     PenSettingsView(model: model).frame(width: 340)
                 }
@@ -357,6 +358,7 @@ struct NotebookEditorView: View {
                         .overlay(Circle().stroke(NoteTheme.controlBorder.opacity(hex == "#FFFFFF" ? 1 : 0)))
                 }
                 .buttonStyle(.plain)
+                .hoverHighlight(scale: 1.15)
                 .accessibilityLabel("색 \(hex)")
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
@@ -367,6 +369,7 @@ struct NotebookEditorView: View {
             }), supportsOpacity: false)
             .labelsHidden()
             .frame(width: 36, height: 36)
+            .hoverHighlight(scale: 1.15)
         }
     }
 
@@ -391,6 +394,7 @@ struct NotebookEditorView: View {
                                     in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
                 }
                 .buttonStyle(.plain)
+                .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), scale: 1.1)
                 .accessibilityLabel(["얇게", "보통", "굵게"][min(index, 2)])
                 .accessibilityAddTraits(selected == index ? .isSelected : [])
             }
@@ -483,6 +487,7 @@ struct PenSettingsView: View {
                                         in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
                     }
                     .buttonStyle(.plain)
+                    .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), scale: 1.04)
                 }
             }
             widthSlider(value: model.tools.penWidth, range: 0.3...10) { model.tools.setWidth($0, at: model.tools.penWidthIndex) }

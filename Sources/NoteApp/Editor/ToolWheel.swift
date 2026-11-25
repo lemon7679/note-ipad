@@ -12,6 +12,9 @@ struct ToolWheel: View {
     let anchor: CGPoint
     var onPenSettings: () -> Void
 
+    /// Name of the option the pencil is hovering over, shown above the wheel.
+    @State private var hoverLabel: String?
+
     static let outerRadius: CGFloat = 100
     static let innerRadius: CGFloat = 54
     static let itemSize: CGFloat = 48
@@ -72,6 +75,17 @@ struct ToolWheel: View {
                 wheel
                     .position(center)
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
+                if let hoverLabel {
+                    let above = center.y - r - 8 - 15
+                    Text(hoverLabel)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background(Color.black.opacity(0.75), in: Capsule())
+                        .allowsHitTesting(false)
+                        .position(x: center.x, y: above >= 15 ? above : center.y + r + 8 + 15)
+                }
             }
         }
     }
@@ -96,6 +110,13 @@ struct ToolWheel: View {
             widthButton
         }
         .frame(width: Self.diameter, height: Self.diameter)
+    }
+
+    /// Hover callback that shows `label` while hovering and clears it on exit.
+    private func hovering(_ label: String) -> (Bool) -> Void {
+        { on in
+            if on { hoverLabel = label } else if hoverLabel == label { hoverLabel = nil }
+        }
     }
 
     private func offset(index: Int, count: Int, radius: CGFloat) -> CGSize {
@@ -131,6 +152,7 @@ struct ToolWheel: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled(item))
         .opacity(isEnabled(item) ? 1 : 0.35)
+        .hoverHighlight(scale: 1.14, isEnabled: isEnabled(item), onHover: hovering(item.label))
         .accessibilityLabel(item.label)
         .accessibilityAddTraits(on ? .isSelected : [])
     }
@@ -149,6 +171,7 @@ struct ToolWheel: View {
                 .overlay(Circle().stroke(selected ? NoteTheme.accent : Color.clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(scale: 1.18, onHover: hovering(inkTarget == .highlighter ? "형광펜 색" : "펜 색"))
         .accessibilityLabel("색 \(hex)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -178,6 +201,7 @@ struct ToolWheel: View {
             .overlay(Circle().stroke(NoteTheme.controlBorder))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(scale: 1.1, onHover: hovering("굵기 바꾸기"))
         .accessibilityLabel("굵기 \(index + 1) / \(widths.count)")
         .accessibilityHint("탭하면 다음 굵기로 바뀝니다")
     }

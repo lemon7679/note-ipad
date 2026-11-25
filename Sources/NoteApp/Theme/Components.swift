@@ -23,8 +23,54 @@ struct IconButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
+        .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), isEnabled: isEnabled)
         .accessibilityLabel(label)
         .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// Highlights a control while the Apple Pencil hovers over it (or a trackpad pointer), so you can
+/// see which option the pencil tip will pick before it touches the screen: the control grows
+/// slightly, gets a soft accent fill and an accent ring.
+///
+/// Uses `onContinuousHover`, which iPadOS drives from Apple Pencil hover as well as the pointer.
+/// `onHover` reports enter/exit, e.g. to show the hovered option's name.
+struct HoverHighlight<S: Shape>: ViewModifier {
+    let shape: S
+    var scale: CGFloat = 1.08
+    var isEnabled = true
+    var onHover: ((Bool) -> Void)?
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        let on = hovering && isEnabled
+        content
+            .background(shape.fill(NoteTheme.accent.opacity(on ? 0.14 : 0)))
+            .overlay(shape.stroke(NoteTheme.accent, lineWidth: 2).opacity(on ? 1 : 0))
+            .scaleEffect(on ? scale : 1)
+            .animation(.easeOut(duration: 0.12), value: on)
+            .onContinuousHover { phase in
+                let now: Bool
+                switch phase {
+                case .active: now = true
+                case .ended: now = false
+                }
+                guard now != hovering else { return }
+                hovering = now
+                onHover?(now)
+            }
+    }
+}
+
+extension View {
+    func hoverHighlight<S: Shape>(_ shape: S, scale: CGFloat = 1.08, isEnabled: Bool = true,
+                                  onHover: ((Bool) -> Void)? = nil) -> some View {
+        modifier(HoverHighlight(shape: shape, scale: scale, isEnabled: isEnabled, onHover: onHover))
+    }
+
+    /// Circular hover highlight (wheel items, color swatches).
+    func hoverHighlight(scale: CGFloat = 1.08, isEnabled: Bool = true, onHover: ((Bool) -> Void)? = nil) -> some View {
+        hoverHighlight(Circle(), scale: scale, isEnabled: isEnabled, onHover: onHover)
     }
 }
 
@@ -37,6 +83,7 @@ struct PrimaryButtonStyle: ButtonStyle {
             .frame(minHeight: 40)
             .background(NoteTheme.accent.opacity(configuration.isPressed ? 0.8 : 1),
                         in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
+            .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), scale: 1.03)
     }
 }
 
@@ -50,6 +97,7 @@ struct SecondaryButtonStyle: ButtonStyle {
             .background(NoteTheme.surface.opacity(configuration.isPressed ? 0.7 : 1),
                         in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
             .overlay(RoundedRectangle(cornerRadius: NoteTheme.Radius.control).stroke(NoteTheme.controlBorder))
+            .hoverHighlight(RoundedRectangle(cornerRadius: NoteTheme.Radius.control), scale: 1.03)
     }
 }
 
@@ -70,6 +118,7 @@ struct Chip: View {
                 .overlay(Capsule().stroke(selected ? Color.clear : NoteTheme.controlBorder))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(Capsule(), scale: 1.05)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
