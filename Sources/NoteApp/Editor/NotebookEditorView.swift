@@ -54,13 +54,19 @@ struct NotebookEditorView: View {
     @State private var extracting: Set<UUID>?
     @State private var extractTitle = ""
     @State private var madeNotebook: LibraryRef?
+    /// Full screen: the top bar, tool row, page list and overlays are hidden; only the page remains.
+    @State private var menusHidden = false
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
-            toolRow
+            if !menusHidden {
+                topBar
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                toolRow
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             HStack(spacing: 0) {
-                if model.showsSidebar {
+                if model.showsSidebar && !menusHidden {
                     PageSidebar(model: model) { selection in
                         extractTitle = model.suggestedTitle(for: selection)
                         extracting = selection
@@ -70,12 +76,22 @@ struct NotebookEditorView: View {
                 }
                 ZStack(alignment: .bottom) {
                     CanvasView(model: model, settings: app.settings)
-                        .ignoresSafeArea(edges: .bottom)
-                    bottomOverlay
+                        .ignoresSafeArea(edges: menusHidden ? .all : .bottom)
+                    if menusHidden {
+                        showMenusButton
+                    } else {
+                        bottomOverlay
+                    }
                     if model.toolWheel != nil {
                         ToolWheel(model: model) {
-                            // Let the tool row show the pen button before presenting its popover.
-                            DispatchQueue.main.async { showPenSettings = true }
+                            // The popover hangs from the pen button in the tool row: bring the menus back
+                            // first, and let the tool row show the pen button before presenting it.
+                            if menusHidden {
+                                setMenusHidden(false)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showPenSettings = true }
+                            } else {
+                                DispatchQueue.main.async { showPenSettings = true }
+                            }
                         }
                     }
                 }
@@ -119,7 +135,36 @@ struct NotebookEditorView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.save() }
         }
-        .statusBarHidden(false)
+        .statusBarHidden(menusHidden)
+        .persistentSystemOverlays(menusHidden ? .hidden : .automatic)
+    }
+
+    // MARK: Full screen (menus hidden)
+
+    private func setMenusHidden(_ hidden: Bool) {
+        if hidden { showPenSettings = false }
+        withAnimation(.easeInOut(duration: 0.22)) { menusHidden = hidden }
+    }
+
+    /// The one control left in full screen: a small, faint button in the top-right corner.
+    private var showMenusButton: some View {
+        Button {
+            setMenusHidden(false)
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.black.opacity(0.28), in: Circle())
+                .frame(width: NoteTheme.minTouch, height: NoteTheme.minTouch)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(scale: 1.1)
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .transition(.opacity)
+        .accessibilityLabel("메뉴 보이기")
     }
 
     // MARK: Top bar (design: 52 pt, white)
@@ -166,6 +211,7 @@ struct NotebookEditorView: View {
                 model.toggleBookmark(at: model.currentPageIndex)
             }
             IconButton(systemName: "magnifyingglass", label: "검색과 목차") { showPanel = true }
+            IconButton(systemName: "arrow.up.left.and.arrow.down.right", label: "메뉴 숨기기") { setMenusHidden(true) }
 
             Spacer(minLength: 8)
             Button {
@@ -231,6 +277,9 @@ struct NotebookEditorView: View {
                         model.tools.select(.lasso)
                         NotificationCenter.default.post(name: .canvasPaste, object: nil)
                     } label: { Label("붙여넣기", systemImage: "doc.on.clipboard") }
+                }
+                Button { setMenusHidden(true) } label: {
+                    Label("메뉴 숨기기 (전체 화면)", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 Toggle(isOn: Binding(get: { app.settings.pageLayout == .horizontal },
                                      set: { app.settings.pageLayout = $0 ? .horizontal : .vertical })) {
