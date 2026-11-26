@@ -97,8 +97,12 @@ struct OpenDocument: Identifiable, Hashable {
     var id: String { ref.id + (isRemoteCopy ? "#remote" : "") }
 }
 
-/// What the Apple Pencil's button does (double tap on Pencil 2, squeeze on Pencil Pro).
+/// What an Apple Pencil gesture does (double tap on Pencil 2 / Pro, squeeze on Pencil Pro).
 enum PencilButtonAction: String, Codable, CaseIterable, Identifiable {
+    /// Eraser for one stroke, then back to the tool used before.
+    case eraserOnce
+    /// Eraser while the squeeze is held; letting go returns to the previous tool (squeeze only).
+    case holdEraser
     /// Opens the tool wheel (tools, colors, width, pen settings) at the pencil tip.
     case wheel
     /// Switches between the eraser and the last pen.
@@ -109,11 +113,17 @@ enum PencilButtonAction: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .eraserOnce: return "지우개 (지운 뒤 원래 도구로)"
+        case .holdEraser: return "쥐고 있는 동안 지우개"
         case .wheel: return "휠 메뉴"
         case .eraser: return "지우개 전환"
         case .none: return "사용 안 함"
         }
     }
+
+    /// Double tap is a single event: it can't be held.
+    static let tapActions: [PencilButtonAction] = [.eraserOnce, .eraser, .wheel, .none]
+    static let squeezeActions: [PencilButtonAction] = [.holdEraser, .eraserOnce, .eraser, .wheel, .none]
 }
 
 /// How a notebook's pages are laid out in the editor.
@@ -141,8 +151,10 @@ struct AppSettings: Codable, Equatable {
     var tapGesturesUndo = true
     /// 낙서로 지우기: scribbling back and forth over ink with the pen erases it.
     var scribbleToErase = true
-    /// Pencil double tap / squeeze.
-    var pencilButtonAction: PencilButtonAction = .wheel
+    /// Pencil double tap (Pencil 2 / Pro).
+    var pencilTapAction: PencilButtonAction = .eraserOnce
+    /// Pencil Pro squeeze.
+    var pencilSqueezeAction: PencilButtonAction = .holdEraser
     /// Continuous vertical scroll or sideways page turning.
     var pageLayout: PageLayout = .vertical
     var defaultTemplate: PaperTemplate = .ruled
@@ -178,8 +190,11 @@ extension AppSettings {
         pencilOnly = try c.decodeIfPresent(Bool.self, forKey: .pencilOnly) ?? pencilOnly
         tapGesturesUndo = try c.decodeIfPresent(Bool.self, forKey: .tapGesturesUndo) ?? tapGesturesUndo
         scribbleToErase = try c.decodeIfPresent(Bool.self, forKey: .scribbleToErase) ?? scribbleToErase
-        pencilButtonAction = (try? c.decodeIfPresent(PencilButtonAction.self, forKey: .pencilButtonAction))
-            ?? pencilButtonAction
+        pencilTapAction = (try? c.decodeIfPresent(PencilButtonAction.self, forKey: .pencilTapAction))
+            ?? pencilTapAction
+        if pencilTapAction == .holdEraser { pencilTapAction = .eraserOnce }
+        pencilSqueezeAction = (try? c.decodeIfPresent(PencilButtonAction.self, forKey: .pencilSqueezeAction))
+            ?? pencilSqueezeAction
         pageLayout = (try? c.decodeIfPresent(PageLayout.self, forKey: .pageLayout)) ?? pageLayout
         defaultTemplate = (try? c.decodeIfPresent(PaperTemplate.self, forKey: .defaultTemplate)) ?? defaultTemplate
         defaultPaperColor = (try? c.decodeIfPresent(PaperColor.self, forKey: .defaultPaperColor)) ?? defaultPaperColor

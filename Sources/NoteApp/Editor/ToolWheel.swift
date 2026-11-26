@@ -88,7 +88,7 @@ struct ToolWheel: View {
                     .contentShape(Rectangle())
                     .onTapGesture { close() }
                 paletteView(at: a)
-                    .scaleEffect(appeared ? 1 : 0.6,
+                    .scaleEffect(appeared ? 1 : 0.85,
                                  anchor: UnitPoint(x: a.x / max(geo.size.width, 1), y: a.y / max(geo.size.height, 1)))
                     .opacity(appeared ? 1 : 0)
                 if let hoverLabel {
@@ -104,7 +104,7 @@ struct ToolWheel: View {
                 }
             }
         }
-        .onAppear { withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { appeared = true } }
+        .onAppear { withAnimation(.spring(response: 0.12, dampingFraction: 0.9)) { appeared = true } }
     }
 
     /// Where the pencil was, moved just enough to keep the whole palette on screen.
@@ -129,7 +129,7 @@ struct ToolWheel: View {
                     .transition(.scale(scale: 0.9, anchor: .topLeading).combined(with: .opacity))
             }
         }
-        .animation(.easeOut(duration: 0.15), value: panel)
+        .animation(.easeOut(duration: 0.08), value: panel)
     }
 
     /// Band, bar and column surfaces, drawn as one group so their shadow is shared.
@@ -393,7 +393,7 @@ struct ToolWheel: View {
     }
 
     private func close() {
-        withAnimation(.easeOut(duration: 0.15)) { model.toolWheel = nil }
+        withAnimation(.easeOut(duration: 0.08)) { model.toolWheel = nil }
     }
 }
 

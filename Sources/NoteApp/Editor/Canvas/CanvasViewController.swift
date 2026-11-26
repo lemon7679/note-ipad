@@ -196,6 +196,11 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
         twoFingerTap?.isEnabled = settings.tapGesturesUndo
         threeFingerTap?.isEnabled = settings.tapGesturesUndo
         let tool = tools.tool
+        if tool != .eraser {
+            // Another tool was picked: the temporary eraser is over.
+            eraserReturnTool = nil
+            squeezeHolding = false
+        }
         for pv in pageViews.values {
             pv.elementsInteractive = tool == .text || tool == .image || tool == .lasso
             pv.textEditingEnabled = tool == .text
@@ -599,6 +604,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             pv.invalidate(pv.ink.takeDirty())
             pv.showEraser(at: nil, diameter: 0)
             if didErase { model.noteInkEdit(pv.pageID) }
+            returnFromTemporaryEraser()
         case .lassoing:
             finishLasso(in: pv)
         case .movingSelection(_, let delta):
@@ -628,6 +634,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
                 pv.invalidate(pv.ink.takeDirty())
                 pv.showEraser(at: nil, diameter: 0)
                 if didErase { model.noteInkEdit(pv.pageID) }
+                returnFromTemporaryEraser()
             case .lassoing:
                 pv.hideLasso()
             case .movingSelection, .scalingSelection:
@@ -907,34 +914,66 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     /// Pencil 2 double tap (iOS 17.0–17.4 path).
     func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
         guard UIPencilInteraction.preferredTapAction != .ignore else { return }
-        pencilButton(at: nil)
+        pencilButton(settings.pencilTapAction, at: nil)
     }
 
     /// Pencil 2 double tap / Pencil Pro double tap with the hover position.
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
         guard UIPencilInteraction.preferredTapAction != .ignore else { return }
-        pencilButton(at: tap.hoverPose?.location)
+        pencilButton(settings.pencilTapAction, at: tap.hoverPose?.location)
     }
 
-    /// Pencil Pro squeeze.
+    /// Pencil Pro squeeze. "Hold eraser" follows the squeeze's phases (like the S Pen
+    /// button: eraser while held); every other action fires once on release.
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-        guard squeeze.phase == .ended, UIPencilInteraction.preferredSqueezeAction != .ignore else { return }
-        pencilButton(at: squeeze.hoverPose?.location)
+        guard UIPencilInteraction.preferredSqueezeAction != .ignore else { return }
+        let action = settings.pencilSqueezeAction
+        if action == .holdEraser {
+            switch squeeze.phase {
+            case .began: beginHeldEraser()
+            case .ended, .cancelled: endHeldEraser()
+            default: break
+            }
+            return
+        }
+        guard squeeze.phase == .ended else { return }
+        pencilButton(action, at: squeeze.hoverPose?.location)
     }
 
-    private func pencilButton(at hover: CGPoint?) {
-        switch settings.pencilButtonAction {
+    /// Tool to go back to when the temporary eraser (double tap "erase once" or a held
+    /// squeeze) is done; nil when the eraser was picked normally.
+    private var eraserReturnTool: EditorTool?
+    /// A Pencil Pro squeeze is holding the eraser on.
+    private var squeezeHolding = false
+
+    private func pencilButton(_ action: PencilButtonAction, at hover: CGPoint?) {
+        switch action {
         case .none:
             return
         case .eraser:
             model.toolWheel = nil
             if tools.tool == .eraser {
-                model.tools.select(tools.lastInkTool)
+                model.tools.select(eraserReturnTool ?? tools.lastInkTool)
             } else {
                 model.tools.select(.eraser)
             }
+            eraserReturnTool = nil
+            applySettings()
+        case .eraserOnce, .holdEraser:
+            model.toolWheel = nil
+            if tools.tool == .eraser {
+                // Second double tap before erasing: cancel and go back.
+                let back = eraserReturnTool ?? tools.lastInkTool
+                eraserReturnTool = nil
+                squeezeHolding = false
+                model.tools.select(back)
+            } else {
+                eraserReturnTool = tools.tool
+                model.tools.select(.eraser)
+            }
+            haptics.impactOccurred()
             applySettings()
         case .wheel:
             if model.toolWheel != nil {
@@ -945,6 +984,34 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
             haptics.impactOccurred()
             model.toolWheel = hover ?? lastPencilPoint ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY)
         }
+    }
+
+    private func beginHeldEraser() {
+        guard tools.tool != .eraser else { return }
+        model.toolWheel = nil
+        eraserReturnTool = tools.tool
+        model.tools.select(.eraser)
+        squeezeHolding = true   // after select: applySettings would clear it otherwise
+        haptics.impactOccurred()
+        applySettings()
+    }
+
+    private func endHeldEraser() {
+        guard squeezeHolding else { return }
+        squeezeHolding = false
+        // Mid-stroke: the stroke finishes as an erase, then the tool returns.
+        if case .erasing = interaction { return }
+        returnFromTemporaryEraser()
+    }
+
+    /// After an erase stroke (or the squeeze is released): back to the tool used before
+    /// the double tap / squeeze. Stays on the eraser while the squeeze is still held.
+    private func returnFromTemporaryEraser() {
+        guard !squeezeHolding, let back = eraserReturnTool else { return }
+        eraserReturnTool = nil
+        guard tools.tool == .eraser else { return }
+        model.tools.select(back)
+        applySettings()
     }
 
     // MARK: CanvasControlling

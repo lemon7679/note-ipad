@@ -15,8 +15,11 @@ struct SettingsView: View {
                     Toggle("Apple Pencil로만 그리기", isOn: $app.settings.pencilOnly)
                     Toggle("두 손가락 탭: 실행 취소 · 세 손가락 탭: 다시 실행", isOn: $app.settings.tapGesturesUndo)
                     Toggle("낙서로 지우기", isOn: $app.settings.scribbleToErase)
-                    Picker("펜 버튼 (두 번 탭 · 스퀴즈)", selection: $app.settings.pencilButtonAction) {
-                        ForEach(PencilButtonAction.allCases) { Text($0.label).tag($0) }
+                    Picker("Pencil 두 번 탭", selection: $app.settings.pencilTapAction) {
+                        ForEach(PencilButtonAction.tapActions) { Text($0.label).tag($0) }
+                    }
+                    Picker("Pencil Pro 쥐기 (스퀴즈)", selection: $app.settings.pencilSqueezeAction) {
+                        ForEach(PencilButtonAction.squeezeActions) { Text($0.label).tag($0) }
                     }
                     Picker("페이지 넘기기", selection: $app.settings.pageLayout) {
                         ForEach(PageLayout.allCases) { Text($0.label).tag($0) }
@@ -24,9 +27,13 @@ struct SettingsView: View {
                 } header: {
                     Text("필기")
                 } footer: {
-                    Text("낙서로 지우기: 펜으로 글씨 위를 여러 번 왔다 갔다 문지르면 그 아래 필기가 지워집니다.\n"
-                        + "휠 메뉴: Apple Pencil을 두 번 탭하거나(2세대) 쥐면(Pro) 펜 끝에 도구 · 색 · 굵기 · 펜 설정 휠이 열립니다.\n"
-                        + "옆으로 넘기기: 한 화면에 한 페이지씩 보이고, 손가락으로 옆으로 밀어 페이지를 넘깁니다.")
+                    Text("""
+                        낙서로 지우기: 펜으로 글씨 위를 여러 번 왔다 갔다 문지르면 그 아래 필기가 지워집니다.
+                        지우개 (지운 뒤 원래 도구로): 두 번 탭하면 지우개가 되고, 한 번 지우고 펜을 떼면 쓰던 도구로 돌아갑니다. 지우기 전에 다시 두 번 탭하면 취소됩니다.
+                        쥐고 있는 동안 지우개: Apple Pencil Pro를 쥐고 있는 동안만 지우개가 되고, 손을 풀면 쓰던 도구로 돌아갑니다.
+                        휠 메뉴: 펜 끝에 도구 · 색 · 굵기 · 펜 설정 휠이 열립니다.
+                        옆으로 넘기기: 한 화면에 한 페이지씩 보이고, 손가락으로 옆으로 밀어 페이지를 넘깁니다.
+                        """)
                 }
                 Section("새 노트 기본값") {
                     Picker("종이", selection: $app.settings.defaultTemplate) {

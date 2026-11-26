@@ -95,7 +95,7 @@ struct NotebookEditorView: View {
                         }
                     }
                 }
-                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: model.toolWheel != nil)
+                .animation(.spring(response: 0.12, dampingFraction: 0.9), value: model.toolWheel != nil)
             }
         }
         .background(NoteTheme.desk)
