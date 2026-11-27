@@ -450,11 +450,13 @@ struct DocumentPickerSheet: View {
     }
 
     private var recentDocuments: [Recent] {
-        app.existingItems(app.recents.map(\.ref))
-            .map { Recent(ref: $0.0, item: $0.1) }
-            .filter { $0.item.kind == .notebook || $0.item.kind == .pdf }
-            .prefix(8)
-            .map { $0 }
+        let refs: [LibraryRef] = app.recents.map { $0.ref }
+        var result: [Recent] = []
+        for (ref, item) in app.existingItems(refs) where item.kind == .notebook || item.kind == .pdf {
+            result.append(Recent(ref: ref, item: item))
+            if result.count == 8 { break }
+        }
+        return result
     }
 
     private func pick(_ item: LibraryEntry, _ source: LibrarySource) {
@@ -470,13 +472,18 @@ private struct DocumentPickerFolder: View {
     @State private var items: [LibraryEntry]?
     @State private var query = ""
 
+    /// Folders, notebooks and PDFs whose name matches the search.
+    private func filtered(_ items: [LibraryEntry]) -> [LibraryEntry] {
+        items.filter { item in
+            let openable = item.kind == .folder || item.kind == .notebook || item.kind == .pdf
+            return openable && (query.isEmpty || item.displayName.localizedCaseInsensitiveContains(query))
+        }
+    }
+
     var body: some View {
         List {
             if let items {
-                let shown = items.filter { item in
-                    (item.kind == .folder || item.kind == .notebook || item.kind == .pdf)
-                        && (query.isEmpty || item.displayName.localizedCaseInsensitiveContains(query))
-                }
+                let shown = filtered(items)
                 if shown.isEmpty {
                     Text(query.isEmpty ? "노트나 PDF가 없습니다." : "찾는 문서가 없습니다.")
                         .foregroundStyle(NoteTheme.textSecondary)
@@ -507,6 +514,13 @@ private struct DocumentPickerRow: View {
     let action: () -> Void
     @EnvironmentObject private var app: AppModel
 
+    private var detail: String {
+        var parts: [String] = []
+        if showSource { parts.append(app.displayName(source)) }
+        if let date = item.modified { parts.append(date.libraryLabel) }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         let isOpen = app.isOpen(LibraryRef(source: source, path: item.path).id)
         Button(action: action) {
@@ -517,8 +531,6 @@ private struct DocumentPickerRow: View {
                     .frame(width: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.displayName).font(NoteTheme.Fonts.body).foregroundStyle(NoteTheme.textPrimary).lineLimit(1)
-                    let detail = [showSource ? app.displayName(source) : nil, item.modified?.libraryLabel]
-                        .compactMap { $0 }.joined(separator: " · ")
                     if !detail.isEmpty {
                         Text(detail).font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary).lineLimit(1)
                     }
