@@ -47,6 +47,24 @@ UIScrollView (확대 0.5–5×)
 - **GPU로 바꾸기**: `PageView`의 타일/오버레이 부분만 Metal 구현(note-core `shaders/ink_stroke.metal`)으로
   바꾸면 나머지(입력, 모델, 동기화)는 그대로입니다.
 
+## 작업 공간 (분할 화면 · 떠 있는 창)
+
+문서를 열면 라이브러리 위에 `WorkspaceView`(전체 화면 커버)가 뜹니다. 상태는 `AppModel`에 있습니다.
+
+- `panes`: 나란히 놓인 문서 1–2개(0번이 왼쪽), `splitFraction`: 왼쪽 비율(각 창 최소 320 pt).
+- `floating`: 떠 있는 창(최대 3개) — 위치 · 크기(작업 공간 좌표, 처음엔 오른쪽에 계단식), 최소화 여부, 쌓임 순서(z).
+- `focusedDocumentID`: 마지막으로 만진 창(캔버스 `touchesBegan`, 창 제목 막대).
+- 여는 위치(`DocumentPlacement`): 라이브러리에서(`main`, 이미 열려 있으면 떠 있는 창), 다른 문서 대신(`replacing`,
+  예: PDF의 "필기 시작"), 옆에(`beside`, 두 개면 반대쪽을 바꿈), 떠 있는 창(`floating`).
+  이미 열린 문서는 다시 열지 않고 그 창을 앞으로 가져옵니다(같은 노트를 두 곳에서 편집하지 않음).
+- `DocumentSessions`가 `EditorModel`/`PDFReaderModel`을 문서 ID로 갖고 있어서, 문서가 분할 ↔ 떠 있는 창으로 옮겨
+  뷰가 새로 만들어져도 페이지 · 실행 취소 · 도구 상태가 그대로입니다. 닫을 때(`closeDocument`) 저장 → 동기화 대기 해제 → 세션 제거.
+  마지막 분할 창이 닫히면 맨 앞의 떠 있는 창이 분할 창으로 들어옵니다.
+- 분할 막대와 창 크기 조절은 끄는 동안 위치만 미리 보여 주고 놓을 때 적용합니다(캔버스 재배치는 한 번만).
+- Apple Pencil 더블 탭 · 스퀴즈: 캔버스마다 `UIPencilInteraction`이 있으므로, 처음 받은 캔버스가 `AppModel.routePencil`로
+  넘기고(80 ms 안의 같은 이벤트는 버림) 초점 노트(없으면 맨 앞 노트)의 캔버스가 처리합니다. 스퀴즈의 시작과 끝은 같은 노트로 갑니다.
+- 올가미 붙여넣기 알림은 해당 `EditorModel`을 object로 보내 그 노트만 받습니다.
+
 ## 편집 모델
 
 - `EditorModel`이 노트 하나를 엽니다. 페이지 잉크(`InkPage`)는 필요할 때 `pages/<id>.ink`에서 불러옵니다.
