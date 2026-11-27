@@ -6,6 +6,7 @@ import SwiftUI
 /// Loads a notebook and shows the editor (or why it could not be opened).
 struct NotebookEditorHost: View {
     let document: OpenDocument
+    var role: PaneRole = .single
     @EnvironmentObject private var app: AppModel
     @State private var model: EditorModel?
     @State private var failure: String?
@@ -13,12 +14,12 @@ struct NotebookEditorHost: View {
     var body: some View {
         Group {
             if let model {
-                NotebookEditorView(model: model)
+                NotebookEditorView(model: model, role: role)
             } else if let failure {
                 VStack(spacing: 16) {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 40)).foregroundStyle(NoteTheme.conflict)
                     Text(failure).font(NoteTheme.Fonts.body).multilineTextAlignment(.center)
-                    Button("라이브러리로 돌아가기") { app.documentClosed(document) }
+                    Button(role.closesWorkspace ? "라이브러리로 돌아가기" : "닫기") { app.closeDocument(document.id) }
                         .buttonStyle(PrimaryButtonStyle())
                 }
                 .padding(40)
@@ -31,7 +32,8 @@ struct NotebookEditorHost: View {
         .task {
             guard model == nil, failure == nil else { return }
             do {
-                model = try EditorModel(ref: document.ref, url: document.url, app: app)
+                // The workspace keeps the editor while the notebook moves between panes and windows.
+                model = try app.sessions.editor(for: document, app: app)
             } catch {
                 failure = "노트를 열 수 없습니다.\n\(error.localizedDescription)"
             }
@@ -41,6 +43,7 @@ struct NotebookEditorHost: View {
 
 struct NotebookEditorView: View {
     @ObservedObject var model: EditorModel
+    var role: PaneRole = .single
     @EnvironmentObject private var app: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var showPenSettings = false
@@ -56,17 +59,34 @@ struct NotebookEditorView: View {
     @State private var madeNotebook: LibraryRef?
     /// Full screen: the top bar, tool row, page list and overlays are hidden; only the page remains.
     @State private var menusHidden = false
+    /// Narrow (half of the split screen, a floating window): fewer buttons in the top bar.
+    @State private var compact: Bool?
+
+    private var isCompact: Bool { compact ?? false }
 
     var body: some View {
         VStack(spacing: 0) {
             if !menusHidden {
-                topBar
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                Group {
+                    if role == .floating {
+                        FloatingHeader(documentID: model.documentID, title: model.title, symbol: "book.closed") {
+                            IconButton(systemName: "arrow.uturn.backward", label: "실행 취소", isEnabled: model.canUndo) {
+                                model.undo()
+                            }
+                            IconButton(systemName: "arrow.uturn.forward", label: "다시 실행", isEnabled: model.canRedo) {
+                                model.redo()
+                            }
+                        }
+                    } else {
+                        topBar
+                    }
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
                 toolRow
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             HStack(spacing: 0) {
-                if model.showsSidebar && !menusHidden {
+                if model.showsSidebar && !menusHidden && role != .floating {
                     PageSidebar(model: model) { selection in
                         extractTitle = model.suggestedTitle(for: selection)
                         extracting = selection
@@ -135,6 +155,14 @@ struct NotebookEditorView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.save() }
         }
+        .onChange(of: role) { _, role in
+            if role != .single && menusHidden { setMenusHidden(false) }
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width < 640 } action: { narrow in
+            // Becoming narrow hides the page list once; the button brings it back.
+            if narrow && compact != true { model.showsSidebar = false }
+            compact = narrow
+        }
         .statusBarHidden(menusHidden)
         .persistentSystemOverlays(menusHidden ? .hidden : .automatic)
     }
@@ -191,27 +219,39 @@ struct NotebookEditorView: View {
 
     private var topBar: some View {
         HStack(spacing: 4) {
-            Button {
-                model.close()
-            } label: {
-                HStack(spacing: 2) {
-                    Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
-                    Text("라이브러리").font(.system(size: 15, weight: .medium)).fixedSize()
+            if role.closesWorkspace {
+                Button {
+                    app.closeWorkspace()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
+                        if !isCompact {
+                            Text("라이브러리").font(.system(size: 15, weight: .medium)).fixedSize()
+                        }
+                    }
+                    .foregroundStyle(NoteTheme.accent)
+                    .frame(height: NoteTheme.minTouch)
+                    .padding(.trailing, 6)
                 }
-                .foregroundStyle(NoteTheme.accent)
-                .frame(height: NoteTheme.minTouch)
-                .padding(.trailing, 6)
+                .buttonStyle(.plain)
+                .accessibilityLabel(app.openDocumentCount > 1 ? "모두 닫고 라이브러리로" : "라이브러리")
+            } else {
+                IconButton(systemName: "xmark", label: "이 창 닫기") { app.closeDocument(model.documentID) }
             }
-            .buttonStyle(.plain)
             IconButton(systemName: "sidebar.left", label: "페이지 목록", isOn: model.showsSidebar) {
                 model.showsSidebar.toggle()
             }
-            IconButton(systemName: model.currentPage.bookmarked ? "bookmark.fill" : "bookmark", label: "책갈피",
-                       isOn: model.currentPage.bookmarked) {
-                model.toggleBookmark(at: model.currentPageIndex)
+            WindowMenu(documentID: model.documentID, role: role)
+            if !isCompact {
+                IconButton(systemName: model.currentPage.bookmarked ? "bookmark.fill" : "bookmark", label: "책갈피",
+                           isOn: model.currentPage.bookmarked) {
+                    model.toggleBookmark(at: model.currentPageIndex)
+                }
+                IconButton(systemName: "magnifyingglass", label: "검색과 목차") { showPanel = true }
+                if role == .single {
+                    IconButton(systemName: "arrow.up.left.and.arrow.down.right", label: "메뉴 숨기기") { setMenusHidden(true) }
+                }
             }
-            IconButton(systemName: "magnifyingglass", label: "검색과 목차") { showPanel = true }
-            IconButton(systemName: "arrow.up.left.and.arrow.down.right", label: "메뉴 숨기기") { setMenusHidden(true) }
 
             Spacer(minLength: 8)
             Button {
@@ -223,7 +263,7 @@ struct NotebookEditorView: View {
                     .foregroundStyle(NoteTheme.textPrimary)
             }
             .buttonStyle(.plain)
-            syncPill
+            if !isCompact { syncPill }
             Spacer(minLength: 8)
 
             IconButton(systemName: "arrow.uturn.backward", label: "실행 취소", isEnabled: model.canUndo) { model.undo() }
@@ -247,24 +287,28 @@ struct NotebookEditorView: View {
                     .foregroundStyle(NoteTheme.iconMuted)
             }
             .accessibilityLabel("페이지 추가")
-            Menu {
-                Button {
-                    do { shareItem = ShareItem(url: try model.exportPDF()) } catch { model.lastError = error.localizedDescription }
-                } label: { Label("PDF로 내보내기", systemImage: "doc.richtext") }
-                Button {
-                    if let url = model.exportPageImage(model.currentPageIndex) { shareItem = ShareItem(url: url) }
-                } label: { Label("현재 페이지를 이미지로", systemImage: "photo") }
-                Button {
-                    exportPDFToLibrary()
-                } label: { Label(model.ref.source.accountID != nil ? "NAS 폴더에 PDF 저장" : "노트 옆에 PDF 저장",
-                                 systemImage: "externaldrive") }
-            } label: {
-                Image(systemName: "square.and.arrow.up").font(.system(size: 20))
-                    .frame(width: NoteTheme.minTouch, height: NoteTheme.minTouch)
-                    .foregroundStyle(NoteTheme.iconMuted)
+            if !isCompact {
+                Menu {
+                    exportItems
+                } label: {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 20))
+                        .frame(width: NoteTheme.minTouch, height: NoteTheme.minTouch)
+                        .foregroundStyle(NoteTheme.iconMuted)
+                }
+                .accessibilityLabel("내보내기")
             }
-            .accessibilityLabel("내보내기")
             Menu {
+                if isCompact {
+                    Button { model.toggleBookmark(at: model.currentPageIndex) } label: {
+                        Label(model.currentPage.bookmarked ? "책갈피 해제" : "책갈피",
+                              systemImage: model.currentPage.bookmarked ? "bookmark.slash" : "bookmark")
+                    }
+                    Button { showPanel = true } label: { Label("검색과 목차", systemImage: "magnifyingglass") }
+                    Menu {
+                        exportItems
+                    } label: { Label("내보내기", systemImage: "square.and.arrow.up") }
+                    Divider()
+                }
                 Button { newTitle = model.title; renaming = true } label: { Label("이름 변경", systemImage: "pencil") }
                 Menu("표지") {
                     Button("표지 없음") { model.setCover(nil) }
@@ -275,11 +319,13 @@ struct NotebookEditorView: View {
                 if app.strokeClipboard != nil {
                     Button {
                         model.tools.select(.lasso)
-                        NotificationCenter.default.post(name: .canvasPaste, object: nil)
+                        NotificationCenter.default.post(name: .canvasPaste, object: model)
                     } label: { Label("붙여넣기", systemImage: "doc.on.clipboard") }
                 }
-                Button { setMenusHidden(true) } label: {
-                    Label("메뉴 숨기기 (전체 화면)", systemImage: "arrow.up.left.and.arrow.down.right")
+                if role == .single {
+                    Button { setMenusHidden(true) } label: {
+                        Label("메뉴 숨기기 (전체 화면)", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
                 }
                 Toggle(isOn: Binding(get: { app.settings.pageLayout == .horizontal },
                                      set: { app.settings.pageLayout = $0 ? .horizontal : .vertical })) {
@@ -305,6 +351,20 @@ struct NotebookEditorView: View {
         .frame(height: 52)
         .background(NoteTheme.surface)
         .overlay(alignment: .bottom) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
+    }
+
+    @ViewBuilder
+    private var exportItems: some View {
+        Button {
+            do { shareItem = ShareItem(url: try model.exportPDF()) } catch { model.lastError = error.localizedDescription }
+        } label: { Label("PDF로 내보내기", systemImage: "doc.richtext") }
+        Button {
+            if let url = model.exportPageImage(model.currentPageIndex) { shareItem = ShareItem(url: url) }
+        } label: { Label("현재 페이지를 이미지로", systemImage: "photo") }
+        Button {
+            exportPDFToLibrary()
+        } label: { Label(model.ref.source.accountID != nil ? "NAS 폴더에 PDF 저장" : "노트 옆에 PDF 저장",
+                         systemImage: "externaldrive") }
     }
 
     private func exportPDFToLibrary() {
@@ -484,7 +544,7 @@ struct NotebookEditorView: View {
 
     private var bottomOverlay: some View {
         HStack {
-            if model.tools.tool == .pen && model.tools.snapShapes {
+            if model.tools.tool == .pen && model.tools.snapShapes && !isCompact {
                 HStack(spacing: 8) {
                     Image(systemName: "square.on.circle").foregroundStyle(NoteTheme.accent)
                     Text("그리고 멈추면 도형으로 · 다른 손가락을 대면 완벽한 도형")

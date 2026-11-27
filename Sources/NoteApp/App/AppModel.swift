@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// App-wide state: library sources, NAS accounts and their sync, favorites,
-/// recents and the document on screen.
+/// recents and the open documents (the workspace: split panes and floating windows).
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var accounts: [NASAccount] = []
@@ -13,7 +13,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var conflicts: [UUID: [SyncConflict]] = [:]
     @Published private(set) var favorites: Set<LibraryRef> = []
     @Published private(set) var recents: [RecentEntry] = []
-    @Published var openDocument: OpenDocument?
+    /// Documents side by side: one, or two in split screen (index 0 on the left).
+    /// Empty while the library is showing.
+    @Published var panes: [OpenDocument] = []
+    /// Documents in floating windows over the panes.
+    @Published var floating: [FloatingDocument] = []
+    /// Width of the left pane in split screen (0–1).
+    @Published var splitFraction: CGFloat = 0.5
+    /// The pane or window last touched (gets Apple Pencil double tap / squeeze).
+    @Published var focusedDocumentID: String?
+    /// "문서 열기" sheet for a split pane or floating window.
+    @Published var documentPicker: DocumentPickerRequest?
     @Published var errorMessage: String?
     /// Bumped whenever library contents may have changed (views reload).
     @Published private(set) var libraryRevision = 0
@@ -28,7 +38,11 @@ final class AppModel: ObservableObject {
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
     private var scheduled: [UUID: Task<Void, Never>] = [:]
     private var periodic: Timer?
-    private var openNotebooks: [LibrarySource: Set<String>] = [:]
+    var openNotebooks: [LibrarySource: Set<String>] = [:]
+    let sessions = DocumentSessions()
+    var floatingCounter = 0
+    var lastPencilEvent: (key: String, time: TimeInterval)?
+    weak var squeezeTarget: EditorModel?
 
     init() {
         settings = AppSettings.load()
@@ -154,11 +168,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Opening & closing documents
 
-    func open(_ item: LibraryEntry, in source: LibrarySource) {
-        Task { await openAsync(item, in: source) }
+    func open(_ item: LibraryEntry, in source: LibrarySource, placement: DocumentPlacement = .main) {
+        Task { await openAsync(item, in: source, placement: placement) }
     }
 
-    private func openAsync(_ item: LibraryEntry, in source: LibrarySource) async {
+    private func openAsync(_ item: LibraryEntry, in source: LibrarySource, placement: DocumentPlacement) async {
         let ref = LibraryRef(source: source, path: item.path)
         var url = library(source).url(for: item.path)
         if item.isPlaceholder, let id = source.accountID, let engine = engine(for: id) {
@@ -172,10 +186,9 @@ final class AppModel: ObservableObject {
         }
         switch item.kind {
         case .notebook:
-            openNotebooks[source, default: []].insert(item.path)
-            openDocument = OpenDocument(ref: ref, url: url, kind: .notebook)
+            present(OpenDocument(ref: ref, url: url, kind: .notebook), placement: placement)
         case .pdf:
-            openDocument = OpenDocument(ref: ref, url: url, kind: .pdf)
+            present(OpenDocument(ref: ref, url: url, kind: .pdf), placement: placement)
         default:
             errorMessage = "이 형식(\(RemotePath.pathExtension(item.path).uppercased()))은 열 수 없습니다. 공유 메뉴로 다른 앱에서 열어 주세요."
             return
@@ -183,12 +196,13 @@ final class AppModel: ObservableObject {
         noteRecent(ref)
     }
 
-    func openNotebook(_ ref: LibraryRef) {
-        openNotebooks[ref.source, default: []].insert(ref.path)
-        openDocument = OpenDocument(ref: ref, url: url(for: ref), kind: .notebook)
+    func openNotebook(_ ref: LibraryRef, placement: DocumentPlacement = .main) {
+        present(OpenDocument(ref: ref, url: url(for: ref), kind: .notebook), placement: placement)
         noteRecent(ref)
     }
 
+    /// Bookkeeping after a document closed (its editor has saved): sync may touch it again.
+    /// Use `closeDocument` to close one from the UI.
     func documentClosed(_ doc: OpenDocument, exportPDF: (() -> URL?)? = nil) {
         openNotebooks[doc.ref.source]?.remove(doc.ref.path)
         if doc.kind == .notebook, let id = doc.ref.source.accountID, account(id)?.options.exportPDFCopies == true,
@@ -200,7 +214,7 @@ final class AppModel: ObservableObject {
             try? FileManager.default.removeItem(at: target)
             try? FileManager.default.copyItem(at: exported, to: target)
         }
-        if openDocument?.id == doc.id { openDocument = nil }
+        removeFromLayout(doc.id)
         refreshLibrary()
         localChange(in: doc.ref.source)
     }
@@ -227,7 +241,8 @@ final class AppModel: ObservableObject {
     }
 
     /// Imports a PDF from outside (Files, AirDrop…). `annotate` makes it a notebook right away.
-    func importPDF(from url: URL, into location: LibraryLocation, annotate: Bool) {
+    func importPDF(from url: URL, into location: LibraryLocation, annotate: Bool,
+                   placement: DocumentPlacement = .main) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let lib = library(location.source)
@@ -240,7 +255,7 @@ final class AppModel: ObservableObject {
                                                                    in: lib.url(for: location.folder))
                 let ref = LibraryRef(source: location.source,
                                      path: RemotePath.join(location.folder, package.url.lastPathComponent))
-                openNotebook(ref)
+                openNotebook(ref, placement: placement)
             } else {
                 try lib.importFile(from: url, into: location.folder)
             }
@@ -253,12 +268,12 @@ final class AppModel: ObservableObject {
 
     /// "필기 시작" on a PDF in the library: reuses the notebook linked to it, or
     /// creates "<PDF> 필기.inknote" beside it (the original PDF stays untouched on the NAS).
-    func annotate(pdf ref: LibraryRef) {
+    func annotate(pdf ref: LibraryRef, placement: DocumentPlacement = .main) {
         let lib = library(ref.source)
         let folder = RemotePath.parent(ref.path)
         for item in (try? lib.list(folder)) ?? [] where item.kind == .notebook {
             if let doc = try? NotebookPackage(url: lib.url(for: item.path)).readDocument(), doc.pdf?.linkedPath == ref.path {
-                openNotebook(LibraryRef(source: ref.source, path: item.path))
+                openNotebook(LibraryRef(source: ref.source, path: item.path), placement: placement)
                 return
             }
         }
@@ -272,7 +287,8 @@ final class AppModel: ObservableObject {
             let title = FileNaming.split(RemotePath.name(ref.path)).base + " 필기"
             let package = try NotebookPackage.createAnnotating(pdfURL: pdfURL, title: title, pageSizes: sizes,
                                                                in: lib.url(for: folder), linkedPath: ref.path)
-            openNotebook(LibraryRef(source: ref.source, path: RemotePath.join(folder, package.url.lastPathComponent)))
+            openNotebook(LibraryRef(source: ref.source, path: RemotePath.join(folder, package.url.lastPathComponent)),
+                         placement: placement)
             refreshLibrary()
             localChange(in: ref.source)
         } catch {

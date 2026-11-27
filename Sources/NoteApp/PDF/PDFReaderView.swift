@@ -81,9 +81,14 @@ struct PDFKitView: UIViewRepresentable {
         view.displayDirection = .vertical
         view.pageShadowsEnabled = true
         view.backgroundColor = NoteTheme.deskUI
+        // A reader moved to another pane or window gets a new PDFView: keep its page.
+        let resumeIndex = model.pageIndex
         view.document = model.document
         model.pdfView = view
         context.coordinator.observe(view)
+        if resumeIndex > 0, let page = model.document?.page(at: resumeIndex) {
+            DispatchQueue.main.async { [weak view] in view?.go(to: page) }
+        }
         // Let the thumbnail sidebar pick up the new PDFView.
         DispatchQueue.main.async { [model] in model.objectWillChange.send() }
         return view
@@ -136,20 +141,37 @@ struct PDFThumbnails: UIViewRepresentable {
 /// Read-only PDF viewer; "필기" turns it into a notebook next to the PDF.
 struct PDFReaderView: View {
     let document: OpenDocument
+    /// Kept by the workspace, so the page and search survive moving between panes and windows.
+    @ObservedObject var reader: PDFReaderModel
+    var role: PaneRole = .single
     @EnvironmentObject private var app: AppModel
-    @StateObject private var reader = PDFReaderModel()
     @State private var showSidebar = true
+    /// Narrow (half of the split screen, a floating window).
+    @State private var compact: Bool?
     @State private var sidebarTab = 0
     @State private var searching = false
     @State private var query = ""
     @State private var shareItem: ShareItem?
     @State private var scrub: Double = 0
 
+    private var isCompact: Bool { compact ?? false }
+
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            if role == .floating {
+                FloatingHeader(documentID: document.id, title: title, symbol: "doc.richtext") {
+                    IconButton(systemName: "magnifyingglass", label: "검색", isOn: searching) {
+                        searching.toggle()
+                        if !searching { reader.search("") }
+                    }
+                }
+            } else {
+                topBar
+            }
             HStack(spacing: 0) {
-                if showSidebar { sidebar.frame(width: 272).transition(.move(edge: .leading)) }
+                if showSidebar && role != .floating {
+                    sidebar.frame(width: isCompact ? 232 : 272).transition(.move(edge: .leading))
+                }
                 ZStack(alignment: .top) {
                     if reader.document != nil {
                         PDFKitView(model: reader)
@@ -157,7 +179,7 @@ struct PDFReaderView: View {
                         Text("PDF를 열 수 없습니다.").foregroundStyle(NoteTheme.textSecondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    if searching { searchBar.padding(.top, 14) }
+                    if searching { searchBar.padding(.top, 14).padding(.horizontal, 12) }
                     VStack {
                         Spacer()
                         scrubber.padding(.bottom, 16)
@@ -168,6 +190,10 @@ struct PDFReaderView: View {
         .background(NoteTheme.desk)
         .animation(.easeInOut(duration: 0.2), value: showSidebar)
         .onAppear { reader.load(document.url) }
+        .onGeometryChange(for: Bool.self) { $0.size.width < 640 } action: { narrow in
+            if narrow && compact != true { showSidebar = false }
+            compact = narrow
+        }
         .onChange(of: reader.pageIndex) { _, index in scrub = Double(index) }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
     }
@@ -183,48 +209,66 @@ struct PDFReaderView: View {
 
     private var topBar: some View {
         HStack(spacing: 6) {
-            Button {
-                app.openDocument = nil
-            } label: {
-                HStack(spacing: 2) {
-                    Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
-                    Text("닫기").font(.system(size: 15, weight: .medium))
-                }
-                .foregroundStyle(NoteTheme.accent)
-                .frame(height: NoteTheme.minTouch)
-            }
-            .buttonStyle(.plain)
-            VStack(spacing: 1) {
-                Text(title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                Text(subtitle).font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            HStack(spacing: 2) {
-                Text("읽기")
-                    .font(.system(size: 14, weight: .semibold))
-                    .padding(.horizontal, 14)
-                    .frame(height: 34)
-                    .background(NoteTheme.surface, in: RoundedRectangle(cornerRadius: 8))
-                    .shadow(color: .black.opacity(0.1), radius: 1, y: 1)
-                Button { startAnnotating() } label: {
-                    Text("필기").font(.system(size: 14)).foregroundStyle(NoteTheme.iconMuted)
-                        .padding(.horizontal, 14).frame(height: 34)
+            if role.closesWorkspace {
+                Button {
+                    app.closeWorkspace()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
+                        if !isCompact { Text("닫기").font(.system(size: 15, weight: .medium)) }
+                    }
+                    .foregroundStyle(NoteTheme.accent)
+                    .frame(height: NoteTheme.minTouch)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(app.openDocumentCount > 1 ? "모두 닫고 라이브러리로" : "닫기")
+            } else {
+                IconButton(systemName: "xmark", label: "이 창 닫기") { app.closeDocument(document.id) }
             }
-            .padding(3)
-            .background(NoteTheme.fieldFill, in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
+            WindowMenu(documentID: document.id, role: role)
+            VStack(spacing: 1) {
+                Text(title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                if !isCompact {
+                    Text(subtitle).font(NoteTheme.Fonts.caption).foregroundStyle(NoteTheme.textSecondary).lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            if isCompact {
+                IconButton(systemName: "pencil.tip.crop.circle", label: "필기 시작") { startAnnotating() }
+            } else {
+                readWriteToggle
+            }
             IconButton(systemName: "list.bullet", label: "목차", isOn: showSidebar) { showSidebar.toggle() }
             IconButton(systemName: "magnifyingglass", label: "검색", isOn: searching) {
                 searching.toggle()
                 if !searching { reader.search("") }
             }
-            IconButton(systemName: "square.and.arrow.up", label: "공유") { shareItem = ShareItem(url: document.url) }
+            if !isCompact {
+                IconButton(systemName: "square.and.arrow.up", label: "공유") { shareItem = ShareItem(url: document.url) }
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: 56)
         .background(NoteTheme.surface)
         .overlay(alignment: .bottom) { Rectangle().fill(NoteTheme.separator).frame(height: 1) }
+    }
+
+    private var readWriteToggle: some View {
+        HStack(spacing: 2) {
+            Text("읽기")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .background(NoteTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                .shadow(color: .black.opacity(0.1), radius: 1, y: 1)
+            Button { startAnnotating() } label: {
+                Text("필기").font(.system(size: 14)).foregroundStyle(NoteTheme.iconMuted)
+                    .padding(.horizontal, 14).frame(height: 34)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(3)
+        .background(NoteTheme.fieldFill, in: RoundedRectangle(cornerRadius: NoteTheme.Radius.control))
     }
 
     private var sidebar: some View {
@@ -294,7 +338,8 @@ struct PDFReaderView: View {
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
-        .frame(width: 440, height: 44)
+        .frame(maxWidth: 440)
+        .frame(height: 44)
         .background(NoteTheme.surface, in: RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.12), radius: 10, y: 6)
     }
@@ -305,7 +350,7 @@ struct PDFReaderView: View {
             Slider(value: $scrub, in: 0...Double(max(reader.pageCount - 1, 1)), step: 1) { editing in
                 if !editing { reader.go(to: Int(scrub)) }
             }
-            .frame(width: 260)
+            .frame(width: isCompact ? 140 : 260)
             .tint(.white)
             Text("\(reader.pageCount)").monospacedDigit()
         }
@@ -326,12 +371,12 @@ struct PDFReaderView: View {
                 let path = try lib.importFile(from: document.url, into: "/")
                 app.refreshLibrary()
                 app.localChange(in: location.source)
-                app.annotate(pdf: LibraryRef(source: location.source, path: path))
+                app.annotate(pdf: LibraryRef(source: location.source, path: path), placement: .replacing(document.id))
             } catch {
                 app.errorMessage = error.localizedDescription
             }
         } else {
-            app.annotate(pdf: document.ref)
+            app.annotate(pdf: document.ref, placement: .replacing(document.id))
         }
     }
 }

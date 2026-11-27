@@ -237,8 +237,8 @@ struct RemoteBrowserView: View {
         }
         guard let url = await download(item) else { return }
         dismiss()
-        app.openDocument = OpenDocument(ref: LibraryRef(source: .account(account.id), path: item.path), url: url,
-                                        kind: .pdf, isRemoteCopy: true)
+        app.present(OpenDocument(ref: LibraryRef(source: .account(account.id), path: item.path), url: url,
+                                 kind: .pdf, isRemoteCopy: true))
     }
 
     private func importToLibrary(_ item: RemoteItem) async {

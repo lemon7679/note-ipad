@@ -152,7 +152,8 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
         scrollView.addGestureRecognizer(longPress)
 
         model.canvas = self
-        NotificationCenter.default.addObserver(self, selector: #selector(pasteRequested), name: .canvasPaste, object: nil)
+        // Only this notebook's paste (another notebook may be open beside it).
+        NotificationCenter.default.addObserver(self, selector: #selector(pasteRequested), name: .canvasPaste, object: model)
         applySettings()
     }
 
@@ -476,6 +477,7 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     // MARK: Touches
 
     func touchesBegan(_ touches: Set<UITouch>, event: UIEvent?) {
+        model.app.focus(model.documentID)
         if activeTouch != nil {
             // A finger resting while drawing → perfect shapes.
             if case .drawing = interaction, touches.contains(where: { $0.type == .direct }) {
@@ -914,14 +916,16 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     /// Pencil 2 double tap (iOS 17.0–17.4 path).
     func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
         guard UIPencilInteraction.preferredTapAction != .ignore else { return }
-        pencilButton(settings.pencilTapAction, at: nil)
+        dispatchPencil("tap", hover: nil) { canvas, _ in canvas.pencilButton(canvas.settings.pencilTapAction, at: nil) }
     }
 
     /// Pencil 2 double tap / Pencil Pro double tap with the hover position.
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
         guard UIPencilInteraction.preferredTapAction != .ignore else { return }
-        pencilButton(settings.pencilTapAction, at: tap.hoverPose?.location)
+        dispatchPencil("tap", hover: tap.hoverPose?.location) { canvas, hover in
+            canvas.pencilButton(canvas.settings.pencilTapAction, at: hover)
+        }
     }
 
     /// Pencil Pro squeeze. "Hold eraser" follows the squeeze's phases (like the S Pen
@@ -929,17 +933,42 @@ final class CanvasViewController: UIViewController, UIScrollViewDelegate, Canvas
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
         guard UIPencilInteraction.preferredSqueezeAction != .ignore else { return }
+        let phase: String
+        switch squeeze.phase {
+        case .began: phase = "began"
+        case .ended: phase = "ended"
+        case .cancelled: phase = "cancelled"
+        default: return
+        }
+        dispatchPencil("squeeze-" + phase, hover: squeeze.hoverPose?.location) { canvas, hover in
+            canvas.pencilSqueezed(phase: phase, at: hover)
+        }
+    }
+
+    private func pencilSqueezed(phase: String, at hover: CGPoint?) {
         let action = settings.pencilSqueezeAction
         if action == .holdEraser {
-            switch squeeze.phase {
-            case .began: beginHeldEraser()
-            case .ended, .cancelled: endHeldEraser()
+            switch phase {
+            case "began": beginHeldEraser()
+            case "ended", "cancelled": endHeldEraser()
             default: break
             }
             return
         }
-        guard squeeze.phase == .ended else { return }
-        pencilButton(action, at: squeeze.hoverPose?.location)
+        guard phase == "ended" else { return }
+        pencilButton(action, at: hover)
+    }
+
+    /// With notebooks side by side (split screen, floating windows) every canvas hears the
+    /// pencil: the workspace picks the one that acts (the focused notebook) and drops the copies.
+    /// The hover point is only meaningful in the canvas that received it.
+    private func dispatchPencil(_ key: String, hover: CGPoint?, _ perform: (CanvasViewController, CGPoint?) -> Void) {
+        guard let target = model.app.routePencil(key, from: model) else { return }
+        if target === model {
+            perform(self, hover)
+        } else if let other = target.canvas as? CanvasViewController {
+            perform(other, nil)
+        }
     }
 
     /// Tool to go back to when the temporary eraser (double tap "erase once" or a held

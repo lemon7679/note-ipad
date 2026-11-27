@@ -81,6 +81,8 @@ final class EditorModel: ObservableObject {
     }
 
     var title: String { document.title }
+    /// The id of this notebook in the workspace (`OpenDocument.id`).
+    var documentID: String { ref.id }
     var pageCount: Int { document.pages.count }
     var currentPage: NotebookPage { document.pages[min(currentPageIndex, document.pages.count - 1)] }
 
@@ -527,11 +529,9 @@ final class EditorModel: ObservableObject {
         return subset.pageCount == pageIndices.count && subset.write(to: destination)
     }
 
-    /// Closes this notebook and opens another one (e.g. the one just made from its pages).
+    /// Closes this notebook and opens another one in its place (e.g. the one just made from its pages).
     func closeAndOpen(_ other: LibraryRef) {
-        close()
-        let app = self.app
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { app.openNotebook(other) }
+        app.openNotebook(other, placement: .replacing(documentID))
     }
 
     // MARK: Export

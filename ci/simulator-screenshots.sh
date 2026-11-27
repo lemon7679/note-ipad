@@ -35,7 +35,7 @@ xcrun simctl bootstatus "$UDID" -b > /dev/null
 xcrun simctl install "$UDID" build/NoteApp.app
 
 status=0
-for screen in library editor pdf connect settings; do
+for screen in library editor pdf split floating connect settings; do
   xcrun simctl terminate "$UDID" com.lemon7679.note > /dev/null 2>&1 || true
   xcrun simctl launch "$UDID" com.lemon7679.note -NoteDemoScreen "$screen"
   sleep 9

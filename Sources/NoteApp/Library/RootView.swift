@@ -27,11 +27,9 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(NoteTheme.accent)
-        .fullScreenCover(item: $app.openDocument) { document in
-            switch document.kind {
-            case .notebook: NotebookEditorHost(document: document).environmentObject(app)
-            case .pdf: PDFReaderView(document: document).environmentObject(app)
-            }
+        // Open documents cover the library: one, two side by side, and floating windows.
+        .fullScreenCover(isPresented: Binding(get: { app.isWorkspaceOpen }, set: { if !$0 { app.closeWorkspace() } })) {
+            WorkspaceView().environmentObject(app)
         }
         .sheet(item: $connecting) { account in
             NASConnectView(account: account).environmentObject(app)
@@ -69,6 +67,16 @@ struct RootView: View {
             if let item = items.first(where: { $0.displayName == "선형대수 필기" }) { app.open(item, in: .local) }
         case "pdf":
             if let item = items.first(where: { $0.kind == .pdf }) { app.open(item, in: .local) }
+        case "split", "floating":
+            // A notebook and a PDF side by side, or the PDF with the notebook floating over it.
+            guard let note = items.first(where: { $0.displayName == "선형대수 필기" }),
+                  let pdf = items.first(where: { $0.kind == .pdf }) else { break }
+            let first = screen == "split" ? note : pdf
+            let second = screen == "split" ? pdf : note
+            app.open(first, in: .local)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            let firstID = LibraryRef(source: .local, path: first.path).id
+            app.open(second, in: .local, placement: screen == "split" ? .beside(firstID) : .floating)
         case "connect":
             connecting = NASAccount(name: "", kind: .synology, syncFolder: "/home/Notes")
         case "settings":
